@@ -226,7 +226,7 @@ SDK officiel `mcp` (2.x), transport stdio. Les réponses sont en JSON. Les monta
   cmdkey /generic:bourso-mcp /user:<identifiant> /pass
   ```
 
-  L'application ne fait que lire cette entrée : elle ne la crée, ne la modifie ni ne la supprime, et ne demande jamais d'identifiant. Le détail et les variables d'environnement facultatives seront décrits dans la section Configuration, ajoutée avec la lecture des identifiants.
+  L'application ne fait que lire cette entrée : elle ne la crée, ne la modifie ni ne la supprime, et ne demande jamais d'identifiant. Le détail et les variables d'environnement facultatives sont décrits dans la section Configuration.
 
 ## Installation
 
@@ -239,6 +239,54 @@ uv sync
 ```
 
 Si le dépôt a été cloné sans `--recurse-submodules`, lancer `git submodule update --init` avant `uv sync`.
+
+## Configuration
+
+### Identifiants BoursoBank
+
+Ils sont gérés **hors de l'application**, dans le Gestionnaire d'identification Windows. L'entrée générique `bourso-mcp` a pour nom d'utilisateur l'identifiant BoursoBank (uniquement des chiffres) et pour mot de passe celui de BoursoBank.
+
+| Action | Commande |
+|---|---|
+| Créer l'entrée (le mot de passe est demandé en saisie masquée, rien ne reste dans l'historique) | `cmdkey /generic:bourso-mcp /user:<identifiant> /pass` |
+| La changer | la même commande, ou Panneau de configuration > Gestionnaire d'identification |
+| Vérifier qu'elle existe | `cmdkey /list:bourso-mcp` |
+
+L'application ne fait que **lire** cette entrée : elle ne la crée, ne la modifie ni ne la supprime jamais, ne demande jamais d'identifiant, et n'écrit rien dans la configuration de Claude (ni `claude_desktop_config.json`, ni celle de Claude Code). Les identifiants n'apparaissent ni dans un outil MCP, ni dans une réponse, ni dans un journal.
+
+### Variable d'environnement facultative
+
+`BOURSO_MCP_HOME` change le dossier de données (par défaut `%LOCALAPPDATA%\bourso-mcp\`). C'est un réglage non secret : les identifiants ne passent jamais par l'environnement.
+
+Pour la définir : `rundll32.exe sysdm.cpl,EditEnvironmentVariables`, puis relancer Claude Desktop et les terminaux.
+
+Ordre de lecture (`config.env_lookup`) :
+
+1. l'environnement du processus ;
+2. sous Windows, les variables persistantes de l'utilisateur (`HKCU\Environment`) ;
+3. puis celles du système (`HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`).
+
+Les étapes 2 et 3 existent parce que Claude Desktop et Claude Code lancent les serveurs MCP stdio sous Windows avec un **environnement réduit** (une liste d'environ 16 variables autorisées) : les variables définies par l'utilisateur n'y sont pas transmises. Des signalements de 2026 documentent ce comportement ; le lien vers le signalement de référence sera ajouté ici. Une chaîne vide compte comme absente. Si `LOCALAPPDATA` est introuvable, le dossier par défaut est `<profil utilisateur>\AppData\Local\bourso-mcp`.
+
+### Dossier de données
+
+```
+%LOCALAPPDATA%\bourso-mcp\      (ou BOURSO_MCP_HOME)
+  bourso.db        base SQLite
+  statements/      relevés PDF : <compte>/<AAAA-MM>.pdf
+  exports/         exports CSV
+  woob/            état de session woob (state.bin, chiffré)
+  sync.lock        verrou de synchro
+```
+
+Les dossiers `statements/`, `exports/` et `woob/` sont créés au démarrage.
+
+### Sécurité
+
+- **Entrée du Gestionnaire d'identification** : Windows la chiffre avec DPAPI. Elle est liée à la session de l'utilisateur, n'est jamais écrite en clair sur le disque, n'est pas transmise aux programmes lancés et ne dépend pas de l'environnement du processus : elle reste lisible même avec un environnement réduit.
+- **État de session woob** : il contient les cookies et la reconnaissance de l'appareil qui dispense de la 2FA pendant 90 jours ; avec le mot de passe, il équivaut à un accès au compte. Il est conservé dans `woob/state.bin`, chiffré avec DPAPI (portée utilisateur, entropie propre à l'application), donc illisible hors de la session Windows de l'utilisateur (sauvegarde, autre poste). Un état illisible est ignoré : on repart d'un état vide, ce qui redemande la 2FA. Le chiffrement est ajouté avec la source woob.
+- **Limite assumée** : un programme qui tourne sous la session Windows de l'utilisateur peut lire l'entrée du Gestionnaire d'identification comme l'état woob. Les protections de fond restent BitLocker, Windows Hello et l'absence de logiciel douteux sur le poste.
+- **Données au repos** (base, PDF) : non chiffrées, par choix ; leur protection repose sur la session Windows et le chiffrement du disque.
 
 ## Commandes
 
