@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import collections
 import datetime as dt
+import getpass
 import importlib.metadata as importlib_metadata
 import inspect
 import itertools
@@ -51,7 +52,12 @@ from woob.capabilities.bank.base import AccountType, TransactionType
 from woob.capabilities.base import empty
 from woob.capabilities.bill import DocumentTypes
 from woob.core import WoobBase
-from woob.exceptions import BrowserInteraction, BrowserQuestion, DecoupledValidation
+from woob.exceptions import (
+    BrowserIncorrectPassword,
+    BrowserInteraction,
+    BrowserQuestion,
+    DecoupledValidation,
+)
 from woob.tools.config.yamlconfig import YamlConfig
 from woob.tools.storage import IStorage, StandardStorage
 
@@ -65,6 +71,7 @@ STATEMENT_PATH = WORK_DIR / "dernier-releve.pdf"
 
 # Champs de configuration woob qui portent la réponse à une 2FA (AUTHENTICATION_METHODS).
 ANSWER_FIELDS = ("code", "email_code", "resume")
+STOP_AFTER_OLDER = 3  # arrêt de la lecture après 3 opérations anciennes d'affilée
 MAX_2FA_ROUNDS = 5  # SMS puis e-mail = 2 tours ; marge pour un nouvel essai
 # Types de comptes dont on lit l'historique (le reste est hors périmètre : épargne, bourse...).
 HISTORY_TYPES = {AccountType.CHECKING, AccountType.JOINT, AccountType.CARD, AccountType.UNKNOWN}
@@ -95,7 +102,8 @@ def scrub(text: str) -> str:
     """Remplace par *** toute occurrence d'un identifiant ou d'un mot de passe (précaution)."""
     for secret in _SECRETS:
         text = text.replace(secret, "***")
-    return text
+    # Clavier virtuel de boursorama : un KeyError('<sha256>') désigne un chiffre du mot de passe.
+    return re.sub(r"\b[0-9a-fA-F]{64}\b", "<sha256>", text)
 
 
 def out(text: str = "") -> None:
@@ -115,6 +123,9 @@ def note(tag: str, text: str) -> None:
 class _ScrubFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         record.msg = scrub(record.getMessage())
+        if record.exc_info:  # pas de trace brute : elle ne passerait pas par scrub
+            record.msg += " | " + scrub(describe_exception(record.exc_info[1]))
+            record.exc_info = record.exc_text = None
         record.args = ()
         return True
 
@@ -145,6 +156,10 @@ def describe_exception(exc: BaseException) -> str:
 def report_failure(what: str, exc: BaseException, trace: bool) -> None:
     """À appeler dans un bloc `except` : affiche classe et message, note l'échec."""
     out(f"  ÉCHEC ({what}) : {describe_exception(exc)}")
+    if isinstance(exc, BrowserIncorrectPassword):
+        out("  ATTENTION : ne relancez pas le script avant d'avoir vérifié l'entrée `cmdkey`")
+        out("  (cmdkey /list:bourso-mcp) : chaque lancement est une tentative de connexion et")
+        out("  compte pour le verrouillage du compte BoursoBank.")
     FAILURES.append(f"{what} : {type(exc).__name__}")
     if isinstance(exc, ImportError) or isinstance(exc.__cause__, ImportError):
         IMPORT_ERRORS.append(f"{what} : {exc}")
@@ -415,7 +430,7 @@ def call_with_2fa(backend: Any, function: Any) -> Any:
         except BrowserQuestion as exc:
             record_interaction(exc)
             for field in exc.fields:
-                answer = input(f"  {field.label or field.id} : ").strip()
+                answer = getpass.getpass(f"  {field.label or field.id} (saisie masquée) : ").strip()
                 if not answer:
                     raise Abandon(f"réponse vide pour « {field.id} »") from exc
                 backend.config[field.id].set(answer)
@@ -433,7 +448,7 @@ def preset_answers(backend: Any, fields: list[str]) -> None:
         if name == "resume":
             backend.config["resume"].set(True)
         else:
-            answer = input(f"  {name} : ").strip()
+            answer = getpass.getpass(f"  {name} (saisie masquée) : ").strip()
             if not answer:
                 raise Abandon(f"réponse vide pour « {name} »")
             backend.config[name].set(answer)
@@ -473,13 +488,16 @@ def history_window(backend: Any, account: Any, since: dt.date, max_ops: int) -> 
     """Lit iter_history jusqu'à `since` ; arrêt dès que l'ordre décroissant est établi."""
     iterator = backend.iter_history(account)
     kept: list[Any] = []
-    seen = down = up = 0
+    seen = down = up = older_run = 0
     prev = first = last = None
     truncated = False
     try:
-        for tr in iterator:
-            if seen >= max_ops:
+        while True:
+            if seen >= max_ops:  # test avant de lire : pas de requête de détail en trop
                 truncated = True
+                break
+            tr = next(iterator, None)
+            if tr is None:
                 break
             seen += 1
             day = as_date(tr.date)
@@ -495,8 +513,11 @@ def history_window(backend: Any, account: Any, since: dt.date, max_ops: int) -> 
             prev = day
             if day >= since:
                 kept.append(tr)
-            elif down and not up:
-                break  # ordre décroissant établi : la suite est plus ancienne
+                older_run = 0
+            else:
+                older_run += 1
+                if older_run >= STOP_AFTER_OLDER:
+                    break  # trop d'opérations anciennes d'affilée, quel que soit l'ordre
     finally:
         close = getattr(iterator, "close", None)
         if close:
@@ -826,7 +847,7 @@ def report_recap() -> None:
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Spike woob / boursorama (lecture seule).")
     parser.add_argument("--days", type=int, default=30, help="fenêtre des opérations (défaut : 30)")
-    parser.add_argument("--max-ops", type=int, default=400, help="plafond d'opérations lues/compte")
+    parser.add_argument("--max-ops", type=int, default=120, help="plafond d'opérations lues/compte")
     parser.add_argument(
         "--answer",
         action="append",
