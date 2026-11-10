@@ -9,7 +9,7 @@
 - `SyncService` alimente une base SQLite et un dossier de PDF.
 - Les outils de lecture MCP n'interrogent que ce stockage. Seuls les outils `sync_*` et `submit_2fa_code` contactent la banque, via une synchro en tâche de fond.
 
-**Tech Stack :** Python 3.12, uv, woob (git, commit épinglé), SDK `mcp` 2.x (stdio), sqlite3 (bibliothèque standard), keyring, pypdf, filelock, pytest, ruff.
+**Tech Stack :** Python 3.12, uv, woob (git, commit épinglé), SDK `mcp` 2.x (stdio), sqlite3 et winreg (bibliothèque standard), pypdf, filelock, pytest, ruff.
 
 **Spec :** `docs/superpowers/specs/2026-11-10-bourso-mcp-design.md`. Lis-la avant chaque tâche : les sections citées (§) y renvoient.
 
@@ -23,6 +23,11 @@
   - rendus par les outils MCP en chaînes décimales en euros, avec un point (`"-12.50"`) ;
   - en CSV, avec une virgule décimale (`-12,50`).
 - **Dossier de données** : `BOURSO_MCP_HOME`, par défaut `%LOCALAPPDATA%\bourso-mcp\`. Il contient `bourso.db`, `statements/`, `exports/`, `woob/` et `sync.lock`.
+- **Accès personnels gérés hors de l'application** (règle générale de l'utilisateur, §8) :
+  - les identifiants viennent **uniquement** de `BOURSO_MCP_LOGIN` et `BOURSO_MCP_PASSWORD` ;
+  - toute variable se lit avec `config.env_lookup` : environnement du processus, puis variables persistantes Windows de l'utilisateur, puis du système ;
+  - l'application ne demande, ne stocke et ne journalise jamais ces valeurs, et ne les écrit dans aucun fichier : ni le projet, ni `claude_desktop_config.json`, ni la configuration de Claude Code ;
+  - pas de keyring.
 - **Valeurs fixées par la spec** :
   - recouvrement de la synchro : 10 jours, calculé sur `debit_date` ;
   - limitation de fréquence : 1 h, sauf `force` ; une synchro est **réussie** si son statut est `ok` ou `partial` ;
@@ -77,7 +82,7 @@ Résultat attendu : la dernière commande liste « Try using the configured iden
 name = "bourso-mcp"
 version = "0.1.0"
 requires-python = ">=3.12,<3.13"
-dependencies = ["woob", "mcp>=2.3,<3", "keyring>=25", "pypdf>=5", "filelock>=3.16"]
+dependencies = ["woob", "mcp>=2.3,<3", "pypdf>=5", "filelock>=3.16"]
 
 [project.scripts]
 bourso-mcp = "bourso_mcp.cli.main:main"
@@ -135,7 +140,8 @@ Résultat attendu : 2 tests passés. Il n'y a pas d'étape « échec » ici : c'
 3. **Prérequis** :
    - Git, uv ≥ 0.5 (`winget install --id=astral-sh.uv -e`), Python 3.12 (`uv python install 3.12`) ;
    - Claude Desktop ou Claude Code ;
-   - un compte BoursoBank avec la 2FA par SMS, e-mail ou appli (pas de QR code).
+   - un compte BoursoBank avec la 2FA par SMS, e-mail ou appli (pas de QR code) ;
+   - les variables d'environnement d'accès `BOURSO_MCP_LOGIN` et `BOURSO_MCP_PASSWORD`, définies par l'utilisateur hors du projet. Le détail est dans la section Configuration, écrite à la tâche 3.
 4. **Installation** : `git clone --recurse-submodules …`, puis `uv sync`.
 5. **Commandes** : `uv run pytest -v`, `uv run ruff check .`.
 6. **Notes d'intégration woob** :
@@ -174,7 +180,7 @@ git commit -m "ajout du socle du projet et de woob épinglé" -m "Co-Authored-By
 - [ ] **Step 1 : écrire `scripts/spike_woob.py`**
 
 Comportement :
-- Demande l'identifiant avec `input` et le mot de passe avec `getpass`. Rien n'est stocké ni journalisé.
+- Lit `BOURSO_MCP_LOGIN` et `BOURSO_MCP_PASSWORD` dans `os.environ`. Si l'une manque, il s'arrête avec un message qui nomme les variables manquantes. Il ne demande rien, ne stocke rien et n'affiche jamais ces valeurs.
 - Charge woob avec `WoobBase(modules_path=<vendor/woob/modules>)`. Si cette signature n'existe pas dans la version épinglée, trouve l'équivalent dans `vendor/woob/woob/core/` et utilise-le.
 - Stocke l'état du backend dans `%TEMP%\bourso-spike\storage` avec le stockage standard de woob, pour que l'état 2FA survive entre deux lancements.
 - Active la 2FA interactive avec le paramètre que lit `TwoFactorBrowser` (voir `vendor/woob/woob/browser/browsers.py`).
@@ -190,7 +196,10 @@ Résultat attendu : aucune erreur.
 
 - [ ] **Step 3 : POINT D'ARRÊT, l'utilisateur lance le script**
 
-L'exécutant s'arrête et demande à l'utilisateur de lancer `uv run python scripts/spike_woob.py`, puis de lui rapporter la sortie **sans données personnelles** : montants, libellés et IBAN masqués.
+L'exécutant s'arrête et demande à l'utilisateur :
+1. de définir `BOURSO_MCP_LOGIN` et `BOURSO_MCP_PASSWORD` dans ses variables d'environnement Windows (`rundll32.exe sysdm.cpl,EditEnvironmentVariables`), puis d'ouvrir un nouveau terminal ;
+2. de lancer `uv run python scripts/spike_woob.py` ;
+3. de lui rapporter la sortie **sans données personnelles** : montants, libellés et IBAN masqués.
 
 - [ ] **Step 4 : consigner les réponses (a) à (i) dans le README**
 
@@ -214,7 +223,12 @@ git commit -m "validation de faisabilité woob boursorama" -m "Co-Authored-By: C
 **Files :**
 - Create : `src/bourso_mcp/config.py`, `src/bourso_mcp/source/__init__.py`, `src/bourso_mcp/source/models.py`, `src/bourso_mcp/source/errors.py`, `src/bourso_mcp/source/base.py`
 - Test : `tests/test_config.py`
-- Modify : `README.md` (sous-section « Configuration » : `BOURSO_MCP_HOME` et l'arborescence du dossier)
+- Modify : `README.md` (section « Configuration ») :
+  - un tableau des variables `BOURSO_MCP_HOME`, `BOURSO_MCP_LOGIN` et `BOURSO_MCP_PASSWORD` ;
+  - comment les définir : `rundll32.exe sysdm.cpl,EditEnvironmentVariables`, puis relancer Claude Desktop et les terminaux ;
+  - l'ordre de lecture et sa raison (§8, avec le lien vers le signalement sur l'environnement réduit) ;
+  - la limite : valeurs en clair dans la ruche de registre de l'utilisateur ;
+  - l'arborescence du dossier de données.
 
 **Interfaces :**
 - Produces :
@@ -226,7 +240,19 @@ class Settings:
     home: Path
     # propriétés : db_path = home/"bourso.db", statements_dir = home/"statements",
     # exports_dir = home/"exports", woob_dir = home/"woob", lock_path = home/"sync.lock"
-def load_settings(env: Mapping[str, str] = os.environ) -> Settings  # crée les dossiers
+def windows_persistent_env(name: str) -> str | None
+    # sous Windows, via winreg : HKCU\Environment, puis
+    # HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment ;
+    # une valeur REG_EXPAND_SZ est développée avec winreg.ExpandEnvironmentStrings ;
+    # renvoie None hors Windows ou si la variable est absente
+def env_lookup(name: str, env: Mapping[str, str] | None = None,
+               persistent: Callable[[str], str | None] | None = None) -> str | None
+    # env None => os.environ ; persistent None => windows_persistent_env, résolu À L'APPEL
+    # (les tests peuvent ainsi le remplacer) ; une chaîne vide compte comme absente
+def load_settings(env: Mapping[str, str] | None = None,
+                  persistent: Callable[[str], str | None] | None = None) -> Settings
+    # home = env_lookup("BOURSO_MCP_HOME"), sinon
+    # (env_lookup("LOCALAPPDATA") ou Path.home()/"AppData"/"Local") / "bourso-mcp" ; crée les dossiers
 
 # source/models.py
 AccountType = Literal["checking", "card"]
@@ -262,18 +288,45 @@ class NetworkError(SourceError)
 - [ ] **Step 1 : écrire les tests qui échouent, dans `tests/test_config.py`**
 
 ```python
+from bourso_mcp.config import windows_persistent_env as real_windows_persistent_env  # capturé à l'import
+
+NONE = lambda name: None  # noqa: E731
+
 def test_default_home_is_localappdata(tmp_path):
-    s = load_settings({"LOCALAPPDATA": str(tmp_path)})
+    s = load_settings({"LOCALAPPDATA": str(tmp_path)}, persistent=NONE)
     assert s.home == tmp_path / "bourso-mcp"
     assert s.db_path == tmp_path / "bourso-mcp" / "bourso.db"
 
 def test_env_overrides_home(tmp_path):
-    s = load_settings({"BOURSO_MCP_HOME": str(tmp_path / "x"), "LOCALAPPDATA": "ignored"})
+    s = load_settings({"BOURSO_MCP_HOME": str(tmp_path / "x"), "LOCALAPPDATA": "ignored"}, persistent=NONE)
     assert s.home == tmp_path / "x"
 
+def test_persistent_env_used_when_process_env_lacks_variable(tmp_path):
+    # cas de Claude Desktop sous Windows : environnement du processus réduit
+    s = load_settings({}, persistent={"BOURSO_MCP_HOME": str(tmp_path / "p")}.get)
+    assert s.home == tmp_path / "p"
+
+def test_process_env_wins_over_persistent(tmp_path):
+    s = load_settings({"BOURSO_MCP_HOME": str(tmp_path / "a")}, persistent={"BOURSO_MCP_HOME": "b"}.get)
+    assert s.home == tmp_path / "a"
+
+def test_empty_value_counts_as_missing():
+    assert env_lookup("X", {"X": ""}, persistent={"X": "y"}.get) == "y"
+
+def test_missing_localappdata_falls_back_to_profile(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    assert load_settings({}, persistent=NONE).home == tmp_path / "AppData" / "Local" / "bourso-mcp"
+
 def test_load_settings_creates_directories(tmp_path):
-    s = load_settings({"BOURSO_MCP_HOME": str(tmp_path)})
+    s = load_settings({"BOURSO_MCP_HOME": str(tmp_path)}, persistent=NONE)
     assert s.statements_dir.is_dir() and s.exports_dir.is_dir() and s.woob_dir.is_dir()
+
+@pytest.mark.skipif(sys.platform != "win32", reason="registre Windows")
+def test_windows_persistent_env_prefers_user_then_system(monkeypatch):
+    # winreg.OpenKey et QueryValueEx remplacés par monkeypatch : on n'écrit jamais dans le vrai registre.
+    # HKCU lève FileNotFoundError ; HKLM renvoie ("%SystemRoot%\\x", REG_EXPAND_SZ)
+    # => real_windows_persistent_env("V") == ExpandEnvironmentStrings("%SystemRoot%\\x")
+    # ; HKCU présent => sa valeur l'emporte
 ```
 
 - [ ] **Step 2 : lancer `uv run pytest tests/test_config.py -v`**
@@ -360,7 +413,9 @@ class Repository:
 - `make_tx(op="2026-10-01", amount=-1250, raw="CB CAFE", label=None, type="card", debit=None, category=None, card=None, value=None) -> Transaction`. Les dates sont données en chaînes ISO, `debit` vaut `op` par défaut et `label` vaut `raw` par défaut.
 - `make_account(id="cc1", type="checking", ownership="owner", parent_id=None, balance_cents=100000) -> Account`.
 
-`tests/conftest.py` : fixtures `settings` (`load_settings({"BOURSO_MCP_HOME": str(tmp_path)})`), `repo` (`Repository(settings.db_path)`) et `now` (`datetime(2026, 11, 10, 7, 0, tzinfo=timezone(timedelta(hours=1)))`).
+`tests/conftest.py` :
+- fixture **autouse** `isolate_env` : `monkeypatch.setattr("bourso_mcp.config.windows_persistent_env", lambda name: None)` et `monkeypatch.delenv` de `BOURSO_MCP_HOME`, `BOURSO_MCP_LOGIN` et `BOURSO_MCP_PASSWORD`. Sans elle, les tests liraient les vrais identifiants de la machine de développement.
+- fixtures `settings` (`load_settings({"BOURSO_MCP_HOME": str(tmp_path)})`), `repo` (`Repository(settings.db_path)`) et `now` (`datetime(2026, 11, 10, 7, 0, tzinfo=timezone(timedelta(hours=1)))`).
 
 - [ ] **Step 2 : écrire les tests qui échouent**
 
@@ -608,7 +663,7 @@ class SyncService:
 - Chaque appel est enregistré dans `self.calls`, par exemple `("iter_transactions", "cc1", date(2026, 10, 21))`.
 
 Déroulé de `run` dans cette tâche :
-1. `start_run`, puis `login`.
+1. `start_run`, puis `source = source_factory()`, puis `login`. Une `SourceError` levée par la fabrique (par exemple des identifiants absents, qui lèvent `CredentialsError(AuthFailed)` à la tâche 10) est traitée comme une erreur de connexion.
 2. `upsert_accounts`.
 3. Pour chaque compte :
    - si le scope inclut les transactions : `since = max_debit_date - OVERLAP` (`None` au premier passage), puis `upsert_transactions` et `replace_pending` ;
@@ -699,6 +754,7 @@ def test_app_validation_passes_none(...)       # ("submit_2fa", None) ; pendant 
 def test_two_factor_expired_gives_auth_required(...)
 def test_wrong_code_gives_auth_required(...)
 def test_auth_failed_is_not_retried(...):            # nb d'appels login == 1 ; "auth_failed"
+def test_source_factory_auth_error_gives_auth_failed(...):  # la fabrique lève AuthFailed("BOURSO_MCP_LOGIN manquante") => "auth_failed", message conservé, aucun sleep
 def test_auth_method_unsupported_gives_error(...)
 def test_network_error_retried_then_succeeds(...):   # network_failures=2 => sleeps == [2, 8] ; "ok"
 def test_network_error_exhausted(...):               # network_failures=9 => sleeps == [2, 8, 30] ; "error"
@@ -794,20 +850,21 @@ git commit -m "ajout de la synchro en tâche de fond" -m "Co-Authored-By: Claude
 - Create : `src/bourso_mcp/credentials.py`, `src/bourso_mcp/source/woob_mapping.py`, `src/bourso_mcp/source/woob_source.py`
 - Test : `tests/test_credentials.py`, `tests/source/test_woob_mapping.py`, `tests/source/test_woob_source.py`
 - Delete : `scripts/spike_woob.py`
-- Modify : `README.md` (table de correspondance woob → domaine dans les notes d'intégration ; stockage des identifiants ; retrait de la mention du spike)
+- Modify : `README.md` (table de correspondance woob → domaine dans les notes d'intégration ; retrait de la mention du spike)
 
 **Interfaces :**
 - Consumes : les notes (a) à (i) du README (tâche 2), le modèle et les erreurs (tâche 3).
 - Produces :
 
 ```python
-# credentials.py
+# credentials.py (lecture seule : aucune écriture, aucun stockage)
+LOGIN_VAR = "BOURSO_MCP_LOGIN"
+PASSWORD_VAR = "BOURSO_MCP_PASSWORD"
 @dataclass(frozen=True)
 class Credentials: login: str; password: str = field(repr=False)
-class CredentialStore(Protocol):
-    def get(self) -> Credentials | None: ...
-    def set(self, c: Credentials) -> None: ...
-class KeyringCredentialStore:   # service keyring "bourso-mcp" ; clé "login" -> identifiant ; clé <identifiant> -> mot de passe
+class CredentialsError(AuthFailed)   # message : noms des variables à définir ou corriger, jamais leurs valeurs
+def load_credentials(lookup: Callable[[str], str | None] = env_lookup) -> Credentials
+    # les deux variables doivent être présentes ; l'identifiant ne contient que des chiffres
 # woob_mapping.py
 def to_account(a: "woob Account") -> Account | None    # None hors TYPE_CHECKING / TYPE_CARD
 def to_transaction(t: "woob Transaction") -> Transaction
@@ -868,7 +925,11 @@ def test_to_transaction_dates_and_amount():     # rdate vide => operation_date =
 def test_to_statement_ref_period():             # règle notée en (f)
 @pytest.mark.parametrize(...) def test_translate_error(exc, expected_type)
 def test_credentials_repr_hides_password():     # "secret" not in repr(...)
-def test_keyring_store_roundtrip():             # backend keyring en mémoire (keyring.set_keyring)
+def test_load_credentials_from_lookup():        # {"BOURSO_MCP_LOGIN": "12345678", "BOURSO_MCP_PASSWORD": "pw"}.get => Credentials("12345678", "pw")
+def test_missing_variables_are_named():         # aucune => les deux noms dans le message ; mot de passe seul absent => seulement BOURSO_MCP_PASSWORD
+def test_login_must_be_digits():                # "12a45" => CredentialsError qui nomme BOURSO_MCP_LOGIN et ne contient pas "12a45"
+def test_credentials_error_is_auth_failed():    # issubclass(CredentialsError, AuthFailed) : pas de nouvel essai côté synchro
+def test_credentials_module_never_writes():     # le source de credentials.py ne contient ni "keyring", ni "open(", ni "SetValue", ni "setx"
 def test_iter_transactions_stops_before_since():
 def test_source_only_calls_allowed_backend_methods():   # flux complet : noms appelés ⊆ ALLOWED_BACKEND_CALLS
 def test_source_module_never_references_write_methods():
@@ -892,7 +953,7 @@ Résultat attendu : tous les tests passent et ruff ne signale rien.
 
 ```bash
 git add -A
-git commit -m "ajout de la source woob boursorama et du stockage des identifiants" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+git commit -m "ajout de la source woob boursorama et de la lecture des identifiants" -m "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 ---
@@ -905,24 +966,23 @@ git commit -m "ajout de la source woob boursorama et du stockage des identifiant
 - Modify : `README.md` (section Commandes complète : chaque commande, ses options et ses codes de sortie)
 
 **Interfaces :**
-- Consumes : `SyncService` et `interactive_handler`/`non_interactive_handler` (tâches 7 et 8), `WoobBoursoSource` et `KeyringCredentialStore` (tâche 10), `load_settings` (tâche 3).
+- Consumes : `SyncService` et `interactive_handler`/`non_interactive_handler` (tâches 7 et 8), `WoobBoursoSource` et `load_credentials` (tâche 10), `load_settings` et `env_lookup` (tâche 3).
 - Produces :
 
 ```python
 # wiring.py
-class MissingCredentials(Exception)
-def credential_store() -> CredentialStore                      # KeyringCredentialStore()
-def source_factory(settings: Settings, store: CredentialStore) -> Callable[[], BankSource]  # MissingCredentials si store.get() is None
+def source_factory(settings: Settings, lookup: Callable[[str], str | None] = env_lookup) -> Callable[[], BankSource]
+    # la fabrique renvoyée appelle load_credentials(lookup), puis construit WoobBoursoSource(creds, settings.woob_dir) ;
+    # une CredentialsError remonte à SyncService, qui donne auth_failed
 def build_service(settings: Settings, factory: Callable[[], BankSource] | None = None) -> SyncService
 # main.py
 def main(argv: list[str] | None = None) -> int
-# codes de sortie : 0 ok ; 1 partial ou error ; 2 auth_required, auth_failed ou identifiants absents ; 3 refus (trop tôt, déjà en cours)
+# codes de sortie : 0 ok ; 1 partial ou error ; 2 auth_required ou auth_failed (identifiants absents compris) ; 3 refus (trop tôt, déjà en cours)
 ```
 
 Commandes :
 - **`login`** :
-  - demande `"Identifiant BoursoBank : "`, en redemandant tant que la saisie n'est pas uniquement composée de chiffres, puis le mot de passe avec `getpass("Mot de passe : ")` ;
-  - enregistre les identifiants avec `store.set` ;
+  - ne demande **aucun** identifiant : ils viennent des variables d'environnement ;
   - lance un passage `run("all", "cli", interactive_handler(), force=True)`, qui ouvre la session avec la 2FA et fait la première synchro ;
   - affiche le résumé.
 - **`sync`** : options `--scope {all,transactions,statements}` (par défaut `all`), `--force`, `--non-interactive` (trigger `schedule`, handler non interactif) et `--dry-run` (tableau par compte, sans écriture).
@@ -930,21 +990,21 @@ Commandes :
   - En cas de `partial`, une ligne par compte en échec.
 - **`status`** : affiche le passage en cours, le dernier passage et la dernière réussite.
 - **Journaux** : `logging.basicConfig(level=INFO, stream=sys.stderr)`.
-- **Identifiants absents** : `MissingCredentials` affiche `"Aucun identifiant enregistré : lance d'abord « bourso-mcp login »."` et sort avec le code 2.
+- **Identifiants absents ou mal formés** : le passage se termine en `auth_failed`. La CLI affiche le message de l'erreur, qui nomme les variables à définir et renvoie à la section Configuration du README, puis sort avec le code 2.
 
 - [ ] **Step 1 : écrire les tests qui échouent**
 
-`BOURSO_MCP_HOME` pointe sur `tmp_path`. `wiring.source_factory` et `wiring.credential_store` sont remplacés par monkeypatch (`FakeBankSource`, keyring en mémoire).
+`BOURSO_MCP_HOME` pointe sur `tmp_path`, et la fixture `isolate_env` (tâche 4) est active. `wiring.source_factory` est remplacé par monkeypatch (`FakeBankSource`), sauf dans `test_missing_credentials_message`, qui utilise le vrai.
 
 ```python
 def test_sync_prints_summary_and_exit_code_0(capsys, ...)
 def test_sync_non_interactive_with_2fa_exits_2_without_prompting(...)   # input monkeypatché pour échouer s'il est appelé
 def test_sync_too_soon_exits_3_and_force_bypasses(...)
 def test_sync_dry_run_writes_nothing(...)
-def test_login_stores_credentials_and_syncs(...)
-def test_login_reprompts_non_digit_identifier(...)
+def test_login_runs_forced_interactive_sync(...)    # 2FA par SMS : input renvoie "123456" ; passage forcé même si le dernier succès date de moins d'1 h
+def test_login_never_prompts_for_credentials(...)   # getpass monkeypatché pour échouer s'il est appelé ; input seulement pour le code 2FA
 def test_status_output(...)
-def test_missing_credentials_message(...)
+def test_missing_credentials_message(...)           # vrai source_factory, variables absentes => sortie avec "BOURSO_MCP_LOGIN" et "BOURSO_MCP_PASSWORD", code 2, aucune source woob construite
 ```
 
 - [ ] **Step 2 : lancer `uv run pytest tests/cli -v`**
@@ -1036,6 +1096,8 @@ def test_app_search_roundtrip():                   # appel search_transactions =
 def test_readme_documents_every_tool():            # chaque nom de TOOL_NAMES présent dans README.md
 def test_readme_documents_every_cli_command():     # "bourso-mcp login|sync|status|serve", "--scope", "--force", "--non-interactive", "--dry-run"
 def test_readme_mentions_pinned_woob_commit():     # git -C vendor/woob rev-parse HEAD présent dans README.md
+def test_readme_documents_every_env_var():         # "BOURSO_MCP_HOME", "BOURSO_MCP_LOGIN", "BOURSO_MCP_PASSWORD"
+def test_readme_config_snippets_carry_no_secret(): # les blocs JSON de README.md ne contiennent ni "PASSWORD" ni "LOGIN"
 ```
 
 - [ ] **Step 2 : lancer `uv run pytest tests/server tests/test_readme.py -v`**
@@ -1059,7 +1121,8 @@ La section « Lancement du MCP » contient :
   claude mcp add bourso -- uv --directory D:\work\repos\bourso-mcp run bourso-mcp serve
   ```
 
-- un rappel : relancer Claude Desktop après modification.
+- un rappel : relancer Claude Desktop après modification ;
+- **aucun bloc `env`** : les identifiants sont lus dans les variables d'environnement Windows, même si Claude réduit l'environnement transmis au serveur (voir Configuration).
 
 - [ ] **Step 5 : lancer `uv run pytest -v` et `uv run ruff check .`**
 
@@ -1089,7 +1152,7 @@ git commit -m "ajout du serveur mcp et de ses outils" -m "Co-Authored-By: Claude
 - Il enregistre la tâche `bourso-mcp sync`, quotidienne, avec `Register-ScheduledTask` :
   - action `(Get-Command uv).Source` avec les arguments `--directory "<racine du dépôt>" run bourso-mcp sync --non-interactive` ;
   - `New-ScheduledTaskSettingsSet -StartWhenAvailable`.
-- Elle s'exécute sous l'utilisateur courant, seulement quand il est connecté, pour garder l'accès au Gestionnaire d'identification Windows.
+- Elle s'exécute sous l'utilisateur courant, seulement quand il est connecté. Elle hérite ainsi de ses variables d'environnement utilisateur, identifiants compris, et `env_lookup` les retrouve dans le registre si besoin. Aucun mot de passe n'est enregistré dans la tâche.
 - `-Unregister` supprime la tâche.
 
 - [ ] **Step 2 : vérifier la syntaxe**
@@ -1116,7 +1179,7 @@ git commit -m "ajout de la synchro planifiée et de la procédure de vérificati
 - [ ] **Step 5 : POINT D'ARRÊT, l'utilisateur fait la vérification de bout en bout**
 
 L'exécutant s'arrête et transmet la procédure à l'utilisateur :
-1. `uv run bourso-mcp login` : identifiants, 2FA, premier passage `ok` ou `partial` détaillé.
+1. `BOURSO_MCP_LOGIN` et `BOURSO_MCP_PASSWORD` sont définis (section Configuration du README), dans un nouveau terminal. Puis `uv run bourso-mcp login` : 2FA, premier passage `ok` ou `partial` détaillé.
 2. `uv run bourso-mcp sync --dry-run` : volumes plausibles par compte, y compris le compte joint et la carte.
 3. `uv run bourso-mcp status`.
 4. Claude Desktop configuré, puis trois questions à poser :

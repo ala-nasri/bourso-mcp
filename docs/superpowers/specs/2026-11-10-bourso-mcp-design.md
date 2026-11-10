@@ -24,7 +24,7 @@ Les données sont récupérées **automatiquement** depuis l'espace client Bours
 - Une question d'analyse sur une période donnée obtient une réponse chiffrée juste, sans que Claude additionne lui-même des lignes.
 - Une synchro quotidienne planifiée tient les données à jour sans action de l'utilisateur, hors renouvellement de la 2FA.
 - Une panne de la source (site modifié, woob cassé) n'empêche pas d'interroger l'historique déjà synchronisé.
-- Aucun identifiant BoursoBank ne transite par Claude.
+- Aucun identifiant BoursoBank ne transite par Claude, et l'application ne les demande ni ne les stocke. **Les accès personnels sont gérés hors du projet, dans des variables d'environnement** (règle générale de l'utilisateur).
 
 ### Comptes couverts
 
@@ -74,7 +74,8 @@ bourso-mcp/
   pyproject.toml
   README.md
   src/bourso_mcp/
-    config.py   Chemins (BOURSO_MCP_HOME), réglages, SecretProvider
+    config.py        Lecture des variables d'environnement (§8), chemins (BOURSO_MCP_HOME)
+    credentials.py   Identifiants lus dans BOURSO_MCP_LOGIN / BOURSO_MCP_PASSWORD
     store/      Base SQLite + dossier PDF. Ne dépend ni de woob ni de MCP.
     source/     Interface BankSource, WoobBoursoSource, modèle de domaine
     sync/       SyncService : orchestration, verrou, journal des passages
@@ -261,10 +262,19 @@ Les seuls qui contactent BoursoBank.
 
 ## 8. Secrets et sécurité
 
-- **Identifiants BoursoBank** :
-  - saisis une seule fois avec `bourso-mcp login` (saisie masquée dans le terminal) ;
-  - stockés dans le Gestionnaire d'identification Windows via `keyring`, derrière une interface `SecretProvider` ;
-  - jamais exposés par un outil MCP ni présents dans une réponse.
+- **Identifiants BoursoBank : gérés hors de l'application.**
+  - L'utilisateur les définit lui-même comme variables d'environnement Windows (utilisateur ou système) : `BOURSO_MCP_LOGIN` (uniquement des chiffres) et `BOURSO_MCP_PASSWORD`.
+  - L'application se contente de les lire. Elle ne les demande jamais, ne les stocke nulle part (ni fichier, ni base, ni trousseau) et ne les écrit pas dans la configuration du client MCP.
+  - Ils ne sont jamais exposés par un outil MCP ni présents dans une réponse ou un journal.
+- **Ordre de lecture des variables** (`BOURSO_MCP_HOME`, `BOURSO_MCP_LOGIN`, `BOURSO_MCP_PASSWORD`, `LOCALAPPDATA`) :
+  1. l'environnement du processus ;
+  2. sous Windows, les variables persistantes de l'utilisateur (`HKCU\Environment`) ;
+  3. puis celles du système (`HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`).
+
+  Les étapes 2 et 3 sont nécessaires parce que Claude Desktop et Claude Code lancent les serveurs MCP stdio sous Windows avec un environnement réduit (une liste d'environ 16 variables autorisées). Les variables définies par l'utilisateur n'y sont pas transmises, et ce comportement est documenté par des signalements de 2026. Faute de cette lecture, il faudrait recopier le mot de passe dans le bloc `env` de la configuration Claude, ce qui contredit la règle.
+- **Si `LOCALAPPDATA` est introuvable** : on utilise `<profil utilisateur>\AppData\Local`.
+- **Limite assumée** : les variables d'environnement utilisateur sont stockées en clair dans la ruche de registre de l'utilisateur, et tout programme lancé dans sa session peut les lire.
+- **Sur le NAS plus tard** : les variables d'environnement du conteneur, fournies par un fichier hors du dépôt.
 - **Codes 2FA** : usage unique et durée de vie courte. Ils peuvent passer par Claude ou par le terminal.
 - **État de session woob** : dans `BOURSO_MCP_HOME/woob/`, jamais journalisé.
 - **Lecture seule** : garantie par `WoobBoursoSource` (section 4.4) et vérifiée par un test.
@@ -280,7 +290,8 @@ Les seuls qui contactent BoursoBank.
 | Erreur | Statut du passage | Comportement |
 |---|---|---|
 | `TwoFactorRequired` | `awaiting_2fa`, puis `auth_required` si personne ne répond | voir section 6.3 |
-| `AuthFailed` | `auth_failed` | **aucun nouvel essai automatique**, pour ne pas faire bloquer le compte ; message : relancer `bourso-mcp login` |
+| Identifiants absents ou mal formés (variables d'environnement) | `auth_failed` | aucun appel à BoursoBank ; le message nomme les variables à définir ou à corriger |
+| `AuthFailed` | `auth_failed` | **aucun nouvel essai automatique**, pour ne pas faire bloquer le compte ; message : corriger `BOURSO_MCP_PASSWORD`, puis relancer `bourso-mcp login` |
 | `AuthMethodUnsupported` | `error` | message explicatif |
 | `SourceBroken` | `error` (ou `partial` si un seul compte est touché) | message : le site a probablement changé, mettre à jour le commit woob épinglé |
 | `NetworkError` | après 3 tentatives (attente de 2 s, 8 s puis 30 s) : `error` | |
@@ -293,7 +304,7 @@ Les outils de lecture fonctionnent quel que soit l'état de la source.
 | Commande | Rôle |
 |---|---|
 | `bourso-mcp serve` | démarre le serveur MCP (stdio) |
-| `bourso-mcp login` | saisie des identifiants et ouverture de session interactive avec 2FA |
+| `bourso-mcp login` | ouverture de session interactive avec 2FA (identifiants lus dans les variables d'environnement), suivie d'une première synchro complète forcée |
 | `bourso-mcp sync [--scope all\|transactions\|statements] [--force] [--non-interactive] [--dry-run]` | synchro. `--non-interactive` pour la tâche planifiée. `--dry-run` récupère les données et affiche les volumes par compte sans rien écrire. |
 | `bourso-mcp status` | état du dernier passage et date du dernier succès |
 
@@ -332,6 +343,7 @@ Livrables de la v1 :
   - l'objectif ;
   - toute l'architecture : modules, règle de dépendance, flux, modèle de données, outils MCP et leurs filtres ;
   - les outils à installer avant de commencer, avec leurs versions ;
+  - les variables d'environnement à définir, dont les accès personnels, et la façon de les définir ;
   - toutes les commandes à lancer : installation, tests, login, synchro, statut ;
   - le lancement du serveur MCP et sa configuration dans Claude Desktop/Code ;
   - la tâche planifiée Windows ;
@@ -343,7 +355,7 @@ Livrables de la v1 :
 
 ## 13. Hors périmètre v1
 
-- Mode NAS : transport Streamable HTTP avec jeton obligatoire (le serveur refusera de démarrer sans), Dockerfile, secrets Docker, synchro planifiée en conteneur. Spec séparée.
+- Mode NAS : transport Streamable HTTP avec jeton obligatoire (le serveur refusera de démarrer sans), Dockerfile, variables d'environnement du conteneur fournies hors du dépôt, synchro planifiée en conteneur. Spec séparée.
 - Source Enable Banking (DSP2).
 - Épargne, bourse, assurance-vie.
 - Catégorisation maison, analyse ligne à ligne des PDF, autres formats d'export que CSV.
@@ -358,4 +370,4 @@ Livrables de la v1 :
 | Cartes à débit différé mal remontées par woob | opérations de carte manquantes | validation à l'étape 0, synchro `partial` visible, suivi de la MR !1033 |
 | Blocage du compte (CGU, trop d'échecs de connexion) | perte d'accès en ligne | aucun nouvel essai sur `AuthFailed`, limitation de fréquence, une synchro par jour |
 | 2FA en QR code imposée par la banque | synchro impossible | `AuthMethodUnsupported` explicite, choix d'une autre méthode côté BoursoBank |
-| Fuite des données locales | confidentialité | données dans le profil Windows de l'utilisateur, aucun secret dans les journaux, identifiants dans le Gestionnaire d'identification Windows |
+| Fuite des données locales ou des identifiants | confidentialité | données dans le profil Windows de l'utilisateur ; aucun secret dans les journaux ni dans les fichiers du projet ou du client MCP ; identifiants gérés par l'utilisateur dans ses variables d'environnement, qui restent lisibles en clair par les programmes de sa session (limite assumée, §8) |
