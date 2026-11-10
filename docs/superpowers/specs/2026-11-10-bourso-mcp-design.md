@@ -153,7 +153,7 @@ Base `BOURSO_MCP_HOME/bourso.db`. `BOURSO_MCP_HOME` vaut `%LOCALAPPDATA%\bourso-
 | `label` | TEXT | libellé nettoyé par woob |
 | `search_text` | TEXT | `raw_label` + `label`, en minuscules et sans accents |
 | `amount_cents` | INTEGER | signé : négatif pour un débit |
-| `type` | TEXT | `card`, `transfer`, `order` (prélèvement), `check`, `deposit`, `withdrawal`, `bank_fee`, `other` |
+| `type` | TEXT | `card`, `card_summary` (débit mensuel global d'une carte à débit différé sur le compte courant), `transfer`, `order` (prélèvement), `check`, `deposit`, `withdrawal`, `bank_fee`, `other` |
 | `category` | TEXT NULL | catégorie BoursoBank si woob la fournit |
 | `card` | TEXT NULL | numéro de carte masqué |
 | `pending` | INTEGER | 1 pour une opération à venir |
@@ -178,7 +178,7 @@ Les PDF sont rangés sous `BOURSO_MCP_HOME/statements/<account_id>/<AAAA-MM>.pdf
 
 ### `sync_runs`
 
-`id`, `started_at`, `finished_at`, `trigger` (`mcp` pour un `sync_now`, `cli` pour une commande lancée à la main, `schedule` pour une commande lancée avec `--non-interactive`), `scope`, `status` (`running`, `awaiting_2fa`, `ok`, `partial`, `auth_required`, `auth_failed`, `error`), `added_transactions`, `added_statements`, `error_type`, `error_message`.
+`id`, `started_at`, `finished_at`, `trigger` (`mcp` pour un `sync_now`, `cli` pour une commande lancée à la main, `schedule` pour une commande lancée avec `--non-interactive`), `scope`, `status` (`running`, `awaiting_2fa`, `ok`, `partial`, `auth_required`, `auth_failed`, `error`), `twofa_method` (méthode 2FA attendue, sinon NULL), `added_transactions`, `added_statements`, `error_type`, `error_message`.
 
 ## 6. Synchro
 
@@ -189,14 +189,15 @@ Les PDF sont rangés sous `BOURSO_MCP_HOME/statements/<account_id>/<AAAA-MM>.pdf
   - la synchro repart de `max(debit_date) − 10 jours` pour le compte (recouvrement), puis insère ou met à jour par empreinte. On utilise la date de débit parce que c'est celle qui ordonne l'historique woob ;
   - premier passage : `since = None`, on récupère tout ce que la source fournit.
 - **Opérations à venir** : à chaque synchro, toutes les lignes `pending = 1` du compte sont supprimées puis rechargées. Une opération qui passe de « à venir » à « comptabilisée » ne crée pas de doublon.
-- **Relevés** : à chaque synchro, on liste les documents de chaque compte et on ne télécharge que ceux dont l'`id` est absent de `statements`. Premier passage : tout ce qui est disponible, soit environ 5 ans.
+- **Relevés** : à chaque synchro, on liste les documents de chaque compte et on ne télécharge que ceux dont l'`id` est absent de `statements`, ou dont le fichier a disparu du disque. Premier passage : tout ce qui est disponible, soit environ 5 ans.
 - **Isolation par compte** : un échec sur un compte n'arrête pas les autres. Le passage est alors marqué `partial`, avec le détail dans `error_message`.
 - **Soldes** : mis à jour à chaque passage réussi d'un compte.
 
 ### 6.2 Exécution
 
 - **Verrou** : un fichier verrou dans `BOURSO_MCP_HOME` empêche deux synchros simultanées, par exemple la tâche planifiée et un `sync_now`. Une demande de synchro pendant qu'une autre tourne renvoie l'état de celle en cours.
-- **Limitation de fréquence** : une synchro est refusée si la dernière synchro `ok` date de moins d'une heure, sauf avec `force=true`.
+- **Passages interrompus** : si le processus s'arrête pendant une synchro (fermeture de Claude Desktop par exemple), le passage resté `running` ou `awaiting_2fa` est marqué `error` (« interrompu ») à la prochaine prise du verrou.
+- **Limitation de fréquence** : une synchro est refusée si la dernière synchro réussie date de moins d'une heure, sauf avec `force=true`. Une synchro **réussie** est une synchro au statut `ok` ou `partial`. C'est la même définition que pour `last_success_at`.
 - **Dans le serveur MCP** : la synchro tourne dans un thread de fond. `sync_now` rend la main immédiatement.
 - **En ligne de commande** : `bourso-mcp sync` tourne au premier plan. Si la 2FA est demandée en mode planifié (non interactif), le passage se termine en `auth_required` sans attendre.
 
@@ -230,7 +231,7 @@ Tous optionnels, combinés en ET :
 | `amount_min`, `amount_max` | nombre positif en euros, comparé à la **valeur absolue** du montant (le sens se filtre avec `direction`) | — |
 | `direction` | `debit` ou `credit` | les deux |
 | `text` | chaîne, recherchée dans `search_text` (sans casse ni accents) | — |
-| `types` | liste de types (section 5) | tous |
+| `types` | liste de types (section 5) | tous **sauf `card_summary`**, pour ne pas compter deux fois les achats d'une carte à débit différé, déjà présents un par un sur le compte carte. On peut l'inclure en le demandant explicitement. |
 | `category` | chaîne exacte | — |
 | `card` | chaîne (fin du numéro masqué) | — |
 | `include_pending` | booléen | `true` |
@@ -254,9 +255,9 @@ Les seuls qui contactent BoursoBank.
 
 | Outil | Paramètres | Réponse |
 |---|---|---|
-| `sync_now` | `scope` (`all` par défaut, `transactions`, `statements`), `force` (`false` par défaut) | id du passage et état initial, ou refus motivé (synchro déjà en cours, ou dernière synchro de moins d'une heure) |
+| `sync_now` | `scope` (`all` par défaut, `transactions`, `statements`), `force` (`false` par défaut) | `started: true`, ou refus motivé (synchro déjà en cours, ou dernière synchro réussie il y a moins d'une heure). L'id et l'avancement du passage se lisent avec `sync_status`. |
 | `sync_status` | — | passage en cours ou dernier passage (statut, étape, méthode 2FA attendue, compteurs, erreur), date du dernier succès |
-| `submit_2fa_code` | `code` | accepté, ou erreur si aucun passage n'attend de code |
+| `submit_2fa_code` | `code` | `accepted: true`, ou `accepted: false` avec la raison (aucun passage n'attend de code) |
 
 ## 8. Secrets et sécurité
 
@@ -327,7 +328,16 @@ pytest et ruff. La suite automatique ne fait aucun appel réseau.
 Livrables de la v1 :
 
 - le dépôt `D:\work\repos\bourso-mcp` ;
-- un `README.md` en français (objectif, démarrage, configuration de Claude Desktop/Code, tâche planifiée Windows, procédure de vérification manuelle) ;
+- un `README.md` en français, **point d'entrée unique du projet**. Il contient :
+  - l'objectif ;
+  - toute l'architecture : modules, règle de dépendance, flux, modèle de données, outils MCP et leurs filtres ;
+  - les outils à installer avant de commencer, avec leurs versions ;
+  - toutes les commandes à lancer : installation, tests, login, synchro, statut ;
+  - le lancement du serveur MCP et sa configuration dans Claude Desktop/Code ;
+  - la tâche planifiée Windows ;
+  - la procédure de vérification manuelle.
+
+  Le README est mis à jour **dans chaque tâche** qui modifie l'architecture, les prérequis, les commandes ou le lancement, et non en fin de projet ;
 - la configuration MCP : `uv --directory D:\work\repos\bourso-mcp run bourso-mcp serve` ;
 - une tâche quotidienne du Planificateur de tâches Windows : `bourso-mcp sync --non-interactive`.
 
