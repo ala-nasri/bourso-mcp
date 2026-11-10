@@ -266,7 +266,7 @@ Ordre de lecture (`config.env_lookup`) :
 2. sous Windows, les variables persistantes de l'utilisateur (`HKCU\Environment`) ;
 3. puis celles du système (`HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`).
 
-Les étapes 2 et 3 existent parce que Claude Desktop et Claude Code lancent les serveurs MCP stdio sous Windows avec un **environnement réduit** (une liste d'environ 16 variables autorisées) : les variables définies par l'utilisateur n'y sont pas transmises. Des signalements de 2026 documentent ce comportement ; le lien vers le signalement de référence sera ajouté ici. Une chaîne vide compte comme absente. Si `LOCALAPPDATA` est introuvable, le dossier par défaut est `<profil utilisateur>\AppData\Local\bourso-mcp`.
+Les étapes 2 et 3 existent parce que Claude Desktop et Claude Code lancent les serveurs MCP stdio sous Windows avec un **environnement réduit** (une liste d'environ 16 variables autorisées) : les variables définies par l'utilisateur n'y sont pas transmises. Des signalements de 2026 documentent ce comportement, par exemple le ticket 90074 (sous Windows, les serveurs MCP stdio de l'application de bureau ne reçoivent qu'environ 16 variables d'environnement filtrées) : <https://claudeissues.com/issue/90074-bug-windows-desktop-stdio-mcp-servers-get-a-16-var-sanitized-environment-missing>. Une chaîne vide compte comme absente. Si `LOCALAPPDATA` est introuvable, le dossier par défaut est `<profil utilisateur>\AppData\Local\bourso-mcp`.
 
 ### Dossier de données
 
