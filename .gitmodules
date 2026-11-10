@@ -1,0 +1,3 @@
+[submodule "vendor/woob"]
+	path = vendor/woob
+	url = https://gitlab.com/woob/woob.git
