@@ -338,7 +338,7 @@ pytest et ruff. La suite automatique ne fait aucun appel réseau.
 
 Livrables de la v1 :
 
-- le dépôt `D:\work\repos\bourso-mcp` ;
+- le dépôt `bourso-mcp`. Aucun fichier versionné ne contient de chemin personnel absolu ni d'identifiant réel : la documentation utilise `<chemin-du-dépôt>`, et les données de test sont fictives ;
 - un `README.md` en français, **point d'entrée unique du projet**. Il contient :
   - l'objectif ;
   - toute l'architecture : modules, règle de dépendance, flux, modèle de données, outils MCP et leurs filtres ;
@@ -350,7 +350,7 @@ Livrables de la v1 :
   - la procédure de vérification manuelle.
 
   Le README est mis à jour **dans chaque tâche** qui modifie l'architecture, les prérequis, les commandes ou le lancement, et non en fin de projet ;
-- la configuration MCP : `uv --directory D:\work\repos\bourso-mcp run bourso-mcp serve` ;
+- la configuration MCP : `uv --directory <chemin-du-dépôt> run bourso-mcp serve` ;
 - une tâche quotidienne du Planificateur de tâches Windows : `bourso-mcp sync --non-interactive`.
 
 ## 13. Hors périmètre v1

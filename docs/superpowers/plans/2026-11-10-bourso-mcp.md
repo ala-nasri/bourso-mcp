@@ -28,6 +28,11 @@
   - toute variable se lit avec `config.env_lookup` : environnement du processus, puis variables persistantes Windows de l'utilisateur, puis du système ;
   - l'application ne demande, ne stocke et ne journalise jamais ces valeurs, et ne les écrit dans aucun fichier : ni le projet, ni `claude_desktop_config.json`, ni la configuration de Claude Code ;
   - pas de keyring.
+- **Hygiène des fichiers versionnés** :
+  - aucun chemin personnel absolu (`X:\…`), aucun IBAN et aucun identifiant réel dans le code, les tests, la configuration versionnée et la documentation ;
+  - la documentation écrit `<chemin-du-dépôt>` ;
+  - les données de test sont fictives et ne sont jamais copiées de vrais relevés ;
+  - `tests/test_hygiene.py` (tâche 1) le vérifie.
 - **Valeurs fixées par la spec** :
   - recouvrement de la synchro : 10 jours, calculé sur `debit_date` ;
   - limitation de fréquence : 1 h, sauf `force` ; une synchro est **réussie** si son statut est `ok` ou `partial` ;
@@ -58,7 +63,7 @@
 ### Task 1 : socle du projet, woob épinglé, README initial
 
 **Files :**
-- Create : `pyproject.toml`, `.python-version`, `.gitignore`, `src/bourso_mcp/__init__.py`, `README.md`, `tests/test_vendor_woob.py`
+- Create : `pyproject.toml`, `.python-version`, `.gitignore`, `src/bourso_mcp/__init__.py`, `README.md`, `tests/test_vendor_woob.py`, `tests/test_hygiene.py`
 - Create (sous-module) : `vendor/woob`, `.gitmodules`
 
 **Interfaces :**
@@ -123,9 +128,19 @@ def test_boursorama_module_is_vendored():
     assert (VENDOR / "modules" / "boursorama" / "module.py").is_file()
 ```
 
+Et dans `tests/test_hygiene.py` (les fichiers suivis sont listés par `git ls-files`, ce qui exclut le contenu du sous-module woob) :
+
+```python
+DRIVE_PATH = re.compile(r"\b[A-Za-z]:\\[A-Za-z]")
+IBAN = re.compile(r"\bFR\d{2}(?:\s?\d{4}){5}")
+
+def test_no_absolute_drive_paths_in_tracked_files():   # aucun fichier suivi ne contient DRIVE_PATH
+def test_no_iban_in_tracked_files():                   # aucun fichier suivi ne contient IBAN
+```
+
 - [ ] **Step 4 : installer avec `uv sync`, puis lancer `uv run pytest -v`**
 
-Résultat attendu : 2 tests passés. Il n'y a pas d'étape « échec » ici : c'est du socle, et `uv run` installerait de toute façon les dépendances avant de lancer les tests. Si `uv sync` échoue sur une dépendance de woob, note-la dans le README (section Prérequis) et corrige.
+Résultat attendu : 4 tests passés. Il n'y a pas d'étape « échec » ici : c'est du socle, et `uv run` installerait de toute façon les dépendances avant de lancer les tests. Si `uv sync` échoue sur une dépendance de woob, note-la dans le README (section Prérequis) et corrige.
 
 - [ ] **Step 5 : écrire `README.md`, avec ces sections et dans cet ordre**
 
@@ -1112,13 +1127,13 @@ La section « Lancement du MCP » contient :
 - la configuration Claude Desktop, dans `%APPDATA%\Claude\claude_desktop_config.json` :
 
   ```json
-  {"mcpServers": {"bourso": {"command": "uv", "args": ["--directory", "D:\\work\\repos\\bourso-mcp", "run", "bourso-mcp", "serve"]}}}
+  {"mcpServers": {"bourso": {"command": "uv", "args": ["--directory", "<chemin-du-dépôt>", "run", "bourso-mcp", "serve"]}}}
   ```
 
 - la commande Claude Code :
 
   ```bash
-  claude mcp add bourso -- uv --directory D:\work\repos\bourso-mcp run bourso-mcp serve
+  claude mcp add bourso -- uv --directory <chemin-du-dépôt> run bourso-mcp serve
   ```
 
 - un rappel : relancer Claude Desktop après modification ;
@@ -1150,7 +1165,7 @@ git commit -m "ajout du serveur mcp et de ses outils" -m "Co-Authored-By: Claude
 
 - Paramètres : `-At "07:30"` (par défaut) et `-Unregister`.
 - Il enregistre la tâche `bourso-mcp sync`, quotidienne, avec `Register-ScheduledTask` :
-  - action `(Get-Command uv).Source` avec les arguments `--directory "<racine du dépôt>" run bourso-mcp sync --non-interactive` ;
+  - action `(Get-Command uv).Source` avec les arguments `--directory "<racine du dépôt>" run bourso-mcp sync --non-interactive`, où la racine est calculée par `Split-Path $PSScriptRoot -Parent` (aucun chemin en dur) ;
   - `New-ScheduledTaskSettingsSet -StartWhenAvailable`.
 - Elle s'exécute sous l'utilisateur courant, seulement quand il est connecté. Elle hérite ainsi de ses variables d'environnement utilisateur, identifiants compris, et `env_lookup` les retrouve dans le registre si besoin. Aucun mot de passe n'est enregistré dans la tâche.
 - `-Unregister` supprime la tâche.
