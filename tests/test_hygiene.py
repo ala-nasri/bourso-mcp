@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-DRIVE_PATH = re.compile(r"\b[A-Za-z]:\[A-Za-z]")
+DRIVE_PATH = re.compile(r"\b[A-Za-z]:\\[A-Za-z]")
 IBAN = re.compile(r"\bFR\d{2}(?:\s?\d{4}){5}")
 
 
@@ -37,3 +37,23 @@ def test_no_absolute_drive_paths_in_tracked_files():
 
 def test_no_iban_in_tracked_files():
     assert _offending_files(IBAN) == []
+
+
+def test_patterns_detect_what_they_forbid():
+    # Témoins positifs : sans eux, une regex mal échappée passerait sans rien détecter.
+    # Les échantillons sont construits à l'exécution pour que ce fichier ne contienne
+    # lui-même ni chemin de lecteur ni IBAN.
+    backslash = chr(92)
+    drive_path = "C" + ":" + backslash + "Users" + backslash + "someone"
+    iban_compact = "FR" + "00" + "0000" * 5
+    iban_spaced = "FR" + "00" + (" " + "0000") * 5
+
+    assert DRIVE_PATH.search(drive_path)
+    assert DRIVE_PATH.search("chemin : " + drive_path)
+    assert IBAN.search(iban_compact)
+    assert IBAN.search("IBAN " + iban_spaced)
+
+    # Témoins négatifs : les écritures légitimes ne doivent pas être signalées.
+    assert not DRIVE_PATH.search("https://example.org/a")
+    assert not DRIVE_PATH.search("%LOCALAPPDATA%" + backslash + "bourso-mcp" + backslash)
+    assert not IBAN.search("FR" + "00" + "0000" * 4)

@@ -216,7 +216,7 @@ SDK officiel `mcp` (2.x), transport stdio. Les réponses sont en JSON. Les monta
 ## Prérequis
 
 - **Git**, avec la prise en charge des sous-modules.
-- **uv ≥ 0.5** : `winget install --id=astral-sh.uv -e`.
+- **uv ≥ 0.13** (testé avec 0.13.7) : `winget install --id=astral-sh.uv -e`.
 - **Python 3.12** : `uv python install 3.12`.
 - **Claude Desktop** ou **Claude Code**.
 - Un **compte BoursoBank** dont la 2FA se fait par SMS, e-mail ou appli. Le QR code n'est pas géré.
