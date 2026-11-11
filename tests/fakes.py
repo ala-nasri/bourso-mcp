@@ -22,6 +22,7 @@ class FakeBankSource:
         account_errors: dict[str, SourceError] | None = None,
         network_failures: int = 0,
         then_methods: list[TwoFactorMethod] | None = None,
+        list_accounts_network_failures: int = 0,
         submit_error: SourceError | None = None,
     ) -> None:
         self.accounts = accounts
@@ -34,6 +35,7 @@ class FakeBankSource:
         self.account_errors = account_errors or {}
         self.network_failures = network_failures
         self.then_methods = list(then_methods or [])
+        self.list_accounts_network_failures = list_accounts_network_failures
         self.submit_error = submit_error
         self.calls: list[tuple] = []
         self._login_calls = 0
@@ -65,6 +67,9 @@ class FakeBankSource:
 
     def list_accounts(self) -> list[Account]:
         self.calls.append(("list_accounts",))
+        if self.list_accounts_network_failures > 0:
+            self.list_accounts_network_failures -= 1
+            raise NetworkError("réseau indisponible")
         return list(self.accounts)
 
     def iter_transactions(self, account_id: str, since: date | None) -> Iterator[Transaction]:

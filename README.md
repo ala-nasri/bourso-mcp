@@ -44,7 +44,7 @@ Un seul paquet Python (3.12, géré avec `uv`), dans `src/bourso_mcp/` :
 | `credentials.py` | lecture seule de l'entrée `bourso-mcp` du Gestionnaire d'identification Windows |
 | `store/` | base SQLite et dossier PDF ; ne dépend ni de woob ni de MCP |
 | `source/` | interface `BankSource`, `WoobBoursoSource`, modèle de domaine |
-| `sync/` | `SyncService` : orchestration, verrou, journal des passages |
+| `sync/` | `SyncService` : orchestration, verrou, journal des passages ; `sync/twofactor.py` : gestionnaire 2FA interactif pour la CLI (saisie au terminal, sans délai) et gestionnaire non interactif qui lève `TwoFactorExpired` |
 | `server/` | serveur MCP : outils de lecture, de synchro et d'authentification |
 | `cli/` | commande `bourso-mcp` : `serve`, `sync`, `login`, `status` |
 
@@ -156,6 +156,7 @@ Les PDF sont rangés sous `BOURSO_MCP_HOME/statements/<account_id>/<AAAA-MM>.pdf
 | Isolation par compte | l'échec d'un compte n'arrête pas les autres ; le passage est alors `partial` |
 | Soldes | mis à jour à chaque passage réussi d'un compte |
 | Verrou | `sync.lock` empêche deux synchros simultanées ; une demande pendant une synchro en cours renvoie l'état de celle-ci |
+| 2FA chaînée | après un code accepté, la banque peut demander une autre méthode (SMS puis e-mail) : 3 étapes au plus par passage ; la même méthode redemandée, une 4e étape ou un code refusé (jamais renvoyé) donnent `auth_required` |
 | Passages interrompus | un passage resté `running` ou `awaiting_2fa` est marqué `error` (« interrompu ») à la prochaine prise du verrou |
 | Limitation de fréquence | refus si la dernière synchro réussie (statut `ok` ou `partial`) date de moins d'une heure, sauf `force` |
 | Nouvelles tentatives | après un `NetworkError` : 3 tentatives, avec des attentes de 2 s, 8 s puis 30 s |

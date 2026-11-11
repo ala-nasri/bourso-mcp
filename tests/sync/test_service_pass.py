@@ -14,7 +14,11 @@ from tests.fakes import FakeBankSource
 
 def make_ref(id, account_id="cc1", period="2026-10", d="2026-10-31"):
     return StatementRef(
-        id=id, account_id=account_id, date=date.fromisoformat(d), period=period, doc_type="statement"
+        id=id,
+        account_id=account_id,
+        date=date.fromisoformat(d),
+        period=period,
+        doc_type="statement",
     )
 
 

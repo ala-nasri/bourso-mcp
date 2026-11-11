@@ -148,7 +148,7 @@ class SyncService:
             log.info("synchro %d démarrée (portée %s)", run_id, scope)
             try:
                 result = self._run(run_id, scope, two_factor)
-            except Exception as exc:  # un bogue ne doit pas laisser la synchro « running »
+            except BaseException as exc:  # bogue ou Ctrl+C : jamais de synchro laissée « running »
                 self._repo.finish_run(run_id, "error", self._now(), 0, 0, type(exc).__name__, None)
                 log.info("synchro %d : statut error (%s)", run_id, type(exc).__name__)
                 raise
@@ -168,7 +168,7 @@ class SyncService:
         lock = self._acquire_lock()
         try:
             source = self._login(None, two_factor)
-            return [self._dry_line(source, a) for a in source.list_accounts()]
+            return [self._dry_line(source, a) for a in self._retry(source.list_accounts)]
         finally:
             lock.release()
 
@@ -189,7 +189,7 @@ class SyncService:
     def _run(self, run_id: int, scope: Scope, two_factor: TwoFactorHandler) -> SyncRunResult:
         try:
             source = self._login(run_id, two_factor)
-            accounts = source.list_accounts()
+            accounts = self._retry(source.list_accounts)
         except SourceError as exc:
             status, error_type, message = _status_for_error(exc)
             return self._finish(run_id, status, [], error_type, message)

@@ -240,3 +240,42 @@ def test_dry_run_auth_failed_propagates(repo, settings, now):
     src = one_account(login_error=AuthFailed("refusé"))
     with pytest.raises(AuthFailed):
         build(src, repo, settings, now).dry_run(lambda m: None)
+
+
+def test_list_accounts_network_error_is_retried(repo, settings, now):
+    src = one_account(list_accounts_network_failures=2)
+    sleeps = []
+    res = build(src, repo, settings, now, sleeps).run("all", "cli", lambda m: None)
+    assert sleeps == [2, 8]
+    assert res.status == "ok"
+
+
+def test_dry_run_list_accounts_network_error_is_retried(repo, settings, now):
+    src = one_account(list_accounts_network_failures=1)
+    sleeps = []
+    lines = build(src, repo, settings, now, sleeps).dry_run(lambda m: None)
+    assert sleeps == [2] and len(lines) == 1
+
+
+def test_two_factor_expired_raised_by_source_gives_auth_required(repo, settings, now):
+    src = one_account(two_factor="app", submit_error=TwoFactorExpired("validation expirée"))
+    res = build(src, repo, settings, now).run("all", "cli", lambda m: None)
+    assert res.status == "auth_required"
+    assert res.error_type == "TwoFactorExpired"
+
+
+def test_keyboard_interrupt_closes_run_and_frees_lock(repo, settings, now):
+    from filelock import FileLock
+
+    src = one_account(two_factor="sms")
+
+    def handler(method):
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        build(src, repo, settings, now).run("all", "cli", handler)
+    assert repo.current_run() is None
+    last = repo.last_finished_run()
+    assert last.status == "error" and last.error_type == "KeyboardInterrupt"
+    with FileLock(settings.lock_path, timeout=0):
+        pass
