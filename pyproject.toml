@@ -27,3 +27,4 @@ extend-exclude = ["vendor"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
