@@ -45,14 +45,14 @@ Un seul paquet Python (3.12, géré avec `uv`), dans `src/bourso_mcp/` :
 | `store/` | base SQLite et dossier PDF ; ne dépend ni de woob ni de MCP |
 | `source/` | interface `BankSource`, modèle de domaine et erreurs ; `woob_source.py` : `WoobBoursoSource` ; `woob_mapping.py` : correspondance woob → domaine ; `woob_storage.py` : stockage woob chiffré, avec `dpapi.py` |
 | `sync/` | `SyncService` : orchestration, verrou, journal des passages ; `sync/twofactor.py` : gestionnaire 2FA interactif pour la CLI (saisie au terminal, sans délai) et gestionnaire non interactif qui lève `TwoFactorExpired` |
-| `server/` | serveur MCP : outils de lecture, de synchro et d'authentification |
+| `server/` | serveur MCP : `tools.py` (logique des neuf outils et validation des paramètres, sans import MCP) et `app.py` (enregistrement auprès du SDK `mcp`, descriptions des outils, transport stdio, `serve_stdio`) |
 | `cli/` | commande `bourso-mcp` : `serve`, `sync`, `login`, `status` |
 
 Règle de dépendance :
 
 - `store` et `source` ne se connaissent pas ;
 - `sync` dépend des deux ;
-- `server` et `cli` dépendent de `sync` et de `store` ;
+- `server` et `cli` dépendent de `sync` et de `store` ; `server` dépend aussi de `cli.wiring` (assemblage du service de synchro) ;
 - seul `source/woob_*` importe woob.
 
 Le dossier de données `BOURSO_MCP_HOME` vaut `%LOCALAPPDATA%\bourso-mcp\` par défaut. Il contient `bourso.db`, `statements/`, `exports/`, `woob/` (état de session woob, chiffré avec DPAPI) et `sync.lock`.
@@ -204,7 +204,7 @@ SDK officiel `mcp` (2.x), transport stdio. Les réponses sont en JSON. Les monta
 | `summarize_transactions` | `group_by` (`month` par défaut, `category`, `label`, `type`, `account`), filtres, `limit` (50 groupes par défaut, ramené dans [1, 500]) | `group_by`, `groups` (`key`, `count`, `total_debits`, `total_credits`, `net`, triés par valeur absolue de `net` décroissante), `limit`, `sync` |
 | `export_transactions` | filtres | écrit `BOURSO_MCP_HOME/exports/transactions-<horodatage>.csv` (séparateur `;`, UTF-8 avec BOM, virgule décimale, pour Excel en français) ; renvoie `path`, `rows` et `sync` |
 | `list_statements` | `account_ids`, `period_from`, `period_to` (`AAAA-MM`) | `statements` (`id`, `account_id`, `period`, `date`, `doc_type`, `path`), `sync` |
-| `read_statement` | `statement_id` | `id`, `account_id`, `period`, `date`, `doc_type`, `path` (fichier local), `pages`, `has_text`, `text` (extrait avec `pypdf`), `sync` ; fichier absent : l'erreur invite à lancer `sync_now(scope="statements")` |
+| `read_statement` | `statement_id` | `id`, `account_id`, `period`, `date`, `doc_type`, `path` (fichier local), `pages`, `has_text`, `text` (extrait avec `pypdf`), `message` (seulement si le PDF n'a aucun texte extractible), `sync` ; fichier absent : l'erreur invite à lancer `sync_now(scope="statements")` |
 
 Validation : un paramètre invalide (date hors `AAAA-MM-JJ`, période hors `AAAA-MM`, bornes inversées, montant négatif, valeur inconnue de `types`, `sort`, `group_by`, `scope`, `direction` ou `date_field`) renvoie une erreur en français qui nomme le paramètre et les valeurs permises. Les montants en entrée (`amount_min`, `amount_max`) sont en euros, nombres ou chaînes décimales.
 
@@ -212,9 +212,9 @@ Validation : un paramètre invalide (date hors `AAAA-MM-JJ`, période hors `AAAA
 
 | Outil | Paramètres | Réponse |
 |---|---|---|
-| `sync_now` | `scope` (`all` par défaut, `transactions`, `statements`), `force` (`false` par défaut) | `started: true` avec un `message` ; ou `started: false` avec `reason` : `already_running` (avec `current`, l'état du passage en cours) ou `too_soon` (avec `last_success_at` ; `force=true` passe outre) |
+| `sync_now` | `scope` (`all` par défaut, `transactions`, `statements`), `force` (`false` par défaut) | `started: true` avec `scope` et un `message` ; ou `started: false` avec `reason` : `already_running` (avec `current`, l'état du passage en cours) ou `too_soon` (avec `last_success_at` ; `force=true` passe outre) |
 | `sync_status` | aucun | `current` (passage en cours : `status` `running` ou `awaiting_2fa`, `twofa_method`, compteurs), `last` (dernier passage terminé : statut, compteurs, erreur), `last_success_at`, `sync` ; l'étape d'un passage est son statut |
-| `submit_2fa_code` | `code` | `accepted: true`, ou `accepted: false` avec la `reason` (aucun passage n'attend de code SMS ou e-mail) ; le code n'est jamais répété ni journalisé |
+| `submit_2fa_code` | `code` | `accepted: true` avec un `message`, ou `accepted: false` avec la `reason` (aucun passage n'attend de code SMS ou e-mail) ; le code n'est jamais répété ni journalisé |
 
 ## Prérequis
 
@@ -348,7 +348,7 @@ uv run bourso-mcp status
 
 Prérequis : `uv sync` fait, et l'entrée `bourso-mcp` créée dans le Gestionnaire d'identification (section Configuration). Dans les commandes ci-dessous, remplacer `<chemin-du-dépôt>` par le dossier du dépôt.
 
-**Claude Desktop.** Le plus sûr pour ouvrir le bon fichier de configuration : Claude Desktop > Paramètres > Développeur > Modifier la configuration. L'édition Microsoft Store (MSIX) peut garder ce fichier dans un dossier d'application empaqueté plutôt que dans `%APPDATA%\Claude\`. Ajouter le serveur à `claude_desktop_config.json` :
+**Claude Desktop.** Le plus sûr pour ouvrir le bon fichier de configuration : Claude Desktop > Paramètres > Développeur > Modifier la configuration. L'édition Microsoft Store (MSIX) peut garder ce fichier dans un dossier d'application empaqueté plutôt que dans `%APPDATA%\Claude\`. Ajouter le serveur à `claude_desktop_config.json`. Dans ce JSON, les antislashs d'un chemin Windows doivent être doublés (`\\`), ou remplacés par `/` :
 
 ```json
 {"mcpServers": {"bourso": {"command": "uv", "args": ["--directory", "<chemin-du-dépôt>", "run", "bourso-mcp", "serve"]}}}

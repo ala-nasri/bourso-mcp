@@ -81,12 +81,11 @@ def _parse_euros(param: str, value: float | str | None) -> int | None:
         cents = euros_to_cents(value)
     except InvalidOperation:
         raise ToolInputError(
-            f"{param} : « {value} » n'est pas un montant en euros (nombre positif, ex. 12.50)."
+            f"{param} : doit être un montant en euros (nombre positif, ex. 12.50)."
         ) from None
     if cents < 0:
         raise ToolInputError(
-            f"{param} : doit être positif ({value}) ; le sens se filtre avec direction "
-            "(debit ou credit)."
+            f"{param} : doit être positif ; le sens se filtre avec direction (debit ou credit)."
         )
     return cents
 
@@ -111,12 +110,13 @@ def parse_filter(
         raise ToolInputError(f"date_from : {start} est postérieure à date_to ({end}).")
     low, high = _parse_euros("amount_min", amount_min), _parse_euros("amount_max", amount_max)
     if low is not None and high is not None and low > high:
-        raise ToolInputError(f"amount_min : {amount_min} dépasse amount_max ({amount_max}).")
+        raise ToolInputError("amount_min : dépasse amount_max (les bornes sont inversées).")
     if direction is not None:
         _choice("direction", direction, DIRECTIONS)
-    tx_types = tuple(_choice("types", t, TX_TYPES) for t in types) if types else None
+    kinds = _non_empty("types", types)
+    tx_types = tuple(_choice("types", t, TX_TYPES) for t in kinds) if kinds else None
     return TransactionFilter(
-        account_ids=tuple(account_ids) if account_ids else None,
+        account_ids=_non_empty("account_ids", account_ids),
         date_from=start,
         date_to=end,
         date_field=_choice("date_field", date_field, DATE_FIELDS),  # type: ignore[arg-type]
@@ -135,6 +135,17 @@ def _period(param: str, value: str | None) -> str | None:
     if value is not None and not _PERIOD_RE.fullmatch(value):
         raise ToolInputError(f"{param} : « {value} » n'est pas une période valide (AAAA-MM).")
     return value
+
+
+def _non_empty(param: str, values: list[str] | None) -> tuple[str, ...] | None:
+    if values is None:
+        return None
+    if not values:
+        raise ToolInputError(
+            f"{param} : la liste est vide, ce qui ne sélectionnerait rien ; "
+            f"omets le paramètre {param} pour tout inclure."
+        )
+    return tuple(values)
 
 
 def _clamp_limit(limit: int) -> int:
@@ -319,7 +330,7 @@ class Tools:
         if start and end and start > end:
             raise ToolInputError(f"period_from : {start} est postérieure à period_to ({end}).")
         rows = list_statements(
-            self._settings.db_path, tuple(account_ids) if account_ids else None, start, end
+            self._settings.db_path, _non_empty("account_ids", account_ids), start, end
         )
         return {
             "statements": [
@@ -403,6 +414,8 @@ class Tools:
         return {**self._runner.status(), "sync": self._sync_block()}
 
     def submit_2fa_code(self, code: str) -> dict[str, Any]:
+        if not "".join(code.split()):
+            raise ToolInputError("code : le code ne doit pas être vide (chiffres reçus par SMS ou e-mail).")
         if self._runner.submit_code(code):
             return {"accepted": True, "message": "Code transmis ; suis la suite avec sync_status."}
         return {

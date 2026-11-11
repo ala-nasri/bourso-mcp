@@ -172,15 +172,29 @@ def test_keyboard_interrupt_exits_130(capsys, home, monkeypatch):
     assert "Traceback" not in capsys.readouterr().out
 
 
-def test_serve_starts_the_stdio_server_without_touching_the_bank(home, monkeypatch, capsys):
-    started = []
-    monkeypatch.setattr("bourso_mcp.server.app.serve_stdio", lambda settings: started.append(settings))
-    monkeypatch.setattr(
-        wiring, "source_factory", lambda settings: pytest.fail("source construite au démarrage")
-    )
+def test_serve_builds_no_source_and_reads_no_credentials(home, monkeypatch, capsys):
+    """Le vrai `serve_stdio` tourne ; seul le transport est neutralisé."""
+    ran = []
+    monkeypatch.setattr("mcp.server.MCPServer.run", lambda self, transport="stdio": ran.append(transport))
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("lecture d'identifiants ou construction de source au démarrage")
+
+    monkeypatch.setattr("keyring.get_credential", forbidden)
+    monkeypatch.setattr(wiring, "WoobBoursoSource", forbidden)
     assert cli_main.main(["serve"]) == 0
-    assert len(started) == 1 and started[0].home == home
+    assert ran == ["stdio"]
     assert capsys.readouterr().out == ""
+
+
+def test_interrupt_message_goes_to_stderr(home, monkeypatch, capsys):
+    def boom(settings, args):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli_main, "_cmd_serve", boom)
+    assert cli_main.main(["serve"]) == 130
+    captured = capsys.readouterr()
+    assert captured.out == "" and "Interrompu" in captured.err
 
 
 def test_help_lists_serve(capsys):

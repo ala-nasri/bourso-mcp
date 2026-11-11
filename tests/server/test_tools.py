@@ -110,7 +110,7 @@ def test_parse_filter_defaults_and_conversions():
     )
     assert f.account_ids == ("cc1",) and f.date_from == date(2026, 10, 1)
     assert f.amount_min_cents == 1250 and f.types == ("card",) and f.date_field == "debit"
-    assert parse_filter().types is None and parse_filter(types=[]).types is None
+    assert parse_filter().types is None
     assert parse_filter().include_pending is True
 
 
@@ -224,12 +224,13 @@ def test_sync_now_reports_started_and_too_soon(make_tools, repo):
     tools = make_tools(FakeBankSource([make_account("cc1")]))
     out = tools.sync_now()
     assert out["started"] is True and "message" in out
-    assert wait_until(lambda: repo.last_success_at() is not None)
+    assert tools._runner.wait(5).status == "ok"
     again = tools.sync_now()
     assert again["started"] is False and again["reason"] == "too_soon"
     assert again["last_success_at"] is not None and "force=true" in again["message"]
     json.dumps(again)
     assert tools.sync_now(force=True)["started"] is True
+    assert tools._runner.wait(5).status == "ok"
 
 
 def test_sync_now_reports_current_run_when_already_running(make_tools):
@@ -268,3 +269,28 @@ def test_submit_2fa_code_without_pending_run(tools):
     assert out["accepted"] is False
     assert "sync_status" in out["reason"] and "SMS" in out["reason"]
     assert "123456" not in json.dumps(out)
+
+
+@pytest.mark.parametrize("tool", ["search_transactions", "summarize_transactions", "export_transactions"])
+@pytest.mark.parametrize("param", ["account_ids", "types"])
+def test_empty_lists_are_rejected_not_treated_as_no_filter(tools, tool, param):
+    with pytest.raises(ToolInputError, match=f"{param}.*omets le paramètre"):
+        getattr(tools, tool)(**{param: []})
+
+
+def test_list_statements_rejects_empty_account_ids(tools):
+    with pytest.raises(ToolInputError, match="account_ids"):
+        tools.list_statements(account_ids=[])
+
+
+def test_amount_errors_do_not_echo_amounts(tools):
+    for kwargs in ({"amount_min": -123.45}, {"amount_max": "-98.76"}, {"amount_min": 777, "amount_max": 55}):
+        with pytest.raises(ToolInputError) as exc:
+            tools.search_transactions(**kwargs)
+        assert not any(ch.isdigit() for ch in str(exc.value).replace("12.50", ""))
+
+
+@pytest.mark.parametrize("code", ["", "   ", " \t\n"])
+def test_submit_2fa_code_rejects_blank_code(tools, code):
+    with pytest.raises(ToolInputError, match="code"):
+        tools.submit_2fa_code(code)

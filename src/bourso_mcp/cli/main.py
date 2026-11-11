@@ -179,7 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(settings, args)
     except KeyboardInterrupt:
-        print("Interrompu.")
+        print("Interrompu.", file=sys.stderr)
         return EXIT_INTERRUPTED
 
 
