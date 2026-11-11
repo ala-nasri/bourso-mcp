@@ -43,7 +43,7 @@ Un seul paquet Python (3.12, géré avec `uv`), dans `src/bourso_mcp/` :
 | `config.py` | variables d'environnement non secrètes, chemins (`BOURSO_MCP_HOME`) |
 | `credentials.py` | lecture seule de l'entrée `bourso-mcp` du Gestionnaire d'identification Windows |
 | `store/` | base SQLite et dossier PDF ; ne dépend ni de woob ni de MCP |
-| `source/` | interface `BankSource`, `WoobBoursoSource`, modèle de domaine |
+| `source/` | interface `BankSource`, modèle de domaine et erreurs ; `woob_source.py` : `WoobBoursoSource` ; `woob_mapping.py` : correspondance woob → domaine ; `woob_storage.py` : stockage woob chiffré, avec `dpapi.py` |
 | `sync/` | `SyncService` : orchestration, verrou, journal des passages ; `sync/twofactor.py` : gestionnaire 2FA interactif pour la CLI (saisie au terminal, sans délai) et gestionnaire non interactif qui lève `TwoFactorExpired` |
 | `server/` | serveur MCP : outils de lecture, de synchro et d'authentification |
 | `cli/` | commande `bourso-mcp` : `serve`, `sync`, `login`, `status` |
@@ -285,7 +285,13 @@ Les dossiers `statements/`, `exports/` et `woob/` sont créés au démarrage.
 ### Sécurité
 
 - **Entrée du Gestionnaire d'identification** : Windows la chiffre avec DPAPI. Elle est liée à la session de l'utilisateur, n'est jamais écrite en clair sur le disque, n'est pas transmise aux programmes lancés et ne dépend pas de l'environnement du processus : elle reste lisible même avec un environnement réduit.
-- **État de session woob** : il contient les cookies et la reconnaissance de l'appareil qui dispense de la 2FA pendant 90 jours ; avec le mot de passe, il équivaut à un accès au compte. Il est conservé dans `woob/state.bin`, chiffré avec DPAPI (portée utilisateur, entropie propre à l'application), donc illisible hors de la session Windows de l'utilisateur (sauvegarde, autre poste). Un état illisible est ignoré : on repart d'un état vide, ce qui redemande la 2FA. Le chiffrement est ajouté avec la source woob.
+- **État de session woob** : il contient les cookies et la reconnaissance de l'appareil qui dispense de la 2FA pendant 90 jours ; avec le mot de passe, il équivaut à un accès au compte.
+  - `WoobBoursoSource` le confie à un stockage woob dédié (`EncryptedWoobStorage`), qui le garde dans un seul fichier, `woob/state.bin`. Aucun autre fichier d'état n'est écrit, et rien n'y est en clair.
+  - L'état, sérialisé en JSON, est chiffré avec DPAPI : `CryptProtectData`, portée utilisateur, entropie propre à l'application, sans aucune fenêtre. Il est écrit dans un fichier temporaire voisin, qui remplace ensuite `state.bin` d'un coup.
+  - Le fichier est donc illisible hors de la session Windows de l'utilisateur (sauvegarde, autre poste).
+  - Il est écrit après chaque ouverture de session réussie, 2FA comprise. Un échec d'écriture n'arrête pas la synchro : un avertissement est journalisé, et la 2FA sera seulement redemandée plus tôt.
+  - Un état illisible (altéré, venu d'un autre utilisateur, contenu invalide) est ignoré, avec un avertissement qui n'en montre aucun contenu : on repart d'un état vide, ce qui redemande la 2FA.
+- **Codes 2FA** : jamais conservés. Le champ de configuration woob qui reçoit un code est vidé dès que la connexion a repris, pour qu'un code ne soit jamais rejoué.
 - **Limite assumée** : un programme qui tourne sous la session Windows de l'utilisateur peut lire l'entrée du Gestionnaire d'identification comme l'état woob. Les protections de fond restent BitLocker, Windows Hello et l'absence de logiciel douteux sur le poste.
 - **Données au repos** (base, PDF) : non chiffrées, par choix ; leur protection repose sur la session Windows et le chiffrement du disque.
 
@@ -322,7 +328,7 @@ La dernière version de woob sur PyPI (3.7, octobre 2024) est plus ancienne que 
 
 ### Résultats du spike woob (tâche 2)
 
-Constats faits par `scripts/spike_woob.py` contre la vraie banque (connexion, liste des comptes et téléchargement d'un relevé réussis), puis lecture du code de woob. Ils pilotent `WoobBoursoSource` (tâche 10).
+Constats faits à la tâche 2 contre la vraie banque, avec un script de validation jetable (connexion, liste des comptes et téléchargement d'un relevé réussis ; le script a été supprimé à la tâche 10), puis lecture du code de woob. Ils pilotent `WoobBoursoSource`.
 
 - **(a) Chargement des modules.** `WoobBase(modules_path=<vendor/woob/modules>)`, puis `load_backend("boursorama", "boursorama", params, storage=<stockage>)`. Le stockage se passe à `load_backend`, pas à `WoobBase`. Classe du module : `BoursoramaModule`. Les paramètres contiennent `login`, `password` et `request_information`.
 - **(b) 2FA interactive.** Le paramètre `request_information` doit valoir une valeur non nulle (par exemple `{}`) dans la configuration **avant** la création du navigateur : `TwoFactorBrowser.is_interactive` est lu à la construction. Sinon, `NeedInteractiveFor2FA`. Exceptions levées par le module (lecture du code) : SMS, `SentOTPQuestion` avec le champ `code` ; e-mail, `SentOTPQuestion` avec le champ `email_code` ; appli, `AppValidation`. Reprise : `backend.config["code"]` ou `["email_code"]` reçoit `.set(<code>)`, ou `backend.config["resume"].set(True)` pour l'appli, puis on rappelle la méthode (champs de `AUTHENTICATION_METHODS` : `code`, `email_code`, `resume`). Un SMS peut être suivi d'un e-mail. Un code faux lève `BrowserIncorrectPassword`. L'attente de la validation dans l'appli est de 10 minutes au plus.
@@ -335,3 +341,72 @@ Constats faits par `scripts/spike_woob.py` contre la vraie banque (connexion, li
 - **(i) Dépendances.** Aucune dépendance supplémentaire à celles de woob et du projet.
 - **(j) Stockage.** Interface `IStorage` : `load(what, name, default)`, `save(what, name)`, `get(what, name, *path, default=)`, `set(what, name, *path, value)`, `delete(what, name, *path)`. `BackendStorage` préfixe tout par `('backends', <nom>)`. Le stockage standard (`StandardStorage`) est un fichier YAML en clair. Appels observés pour un lancement (ordre non établi) : `load`, `get` et `set` de `browser_state`, `save`. Clés déclarées par le navigateur (`__states__`) : `recipient_form`, `transfer_form`, `form_state`, `user_hash`, `otp_number`, `otp_form_token`, `twofa_config`, `otp_headers`, `twofa_count` ; woob y ajoute `url`, `cookies` (et `twofa_logged_date` après une 2FA). `browser_state` est entièrement sérialisable en JSON : `cookies` et `url` sont des `str`, `twofa_count` un `int`, le reste `None`. L'état contient les cookies de session : il doit être chiffré (DPAPI).
 - **(k) Identifiants.** `keyring.get_credential("bourso-mcp", None)` lit l'entrée créée avec `cmdkey` via `WinVaultKeyring` : identifiant et mot de passe sont lus. L'identifiant est composé de chiffres (format exigé par woob). Le risque MSIX de Claude Desktop (accès au Gestionnaire d'identification) reste à vérifier à la tâche 13.
+
+### Correspondance woob → domaine (`source/woob_mapping.py`)
+
+**Opérations.** « Vide » s'entend au sens du helper `empty()` de woob (`None`, `NotLoaded`, `NotAvailable`).
+
+| Domaine | Valeur woob |
+|---|---|
+| `amount_cents` | `amount` (`Decimal`) en centimes, arrondi `ROUND_HALF_UP` : `-12.505` donne `-1251` |
+| `operation_date` | `rdate`, ou `date` si `rdate` est vide |
+| `debit_date` | `date` |
+| `value_date` | `vdate`, sinon rien |
+| `raw_label` | `raw`, sinon `label` |
+| `label` | `label`, sinon `raw` |
+| `category`, `card` | `category`, `card` ; une chaîne vide donne rien |
+
+**Types d'opération.**
+
+| Type woob | Domaine |
+|---|---|
+| `TYPE_CARD`, `TYPE_DEFERRED_CARD` | `card` |
+| `TYPE_CARD_SUMMARY` | `card_summary` |
+| `TYPE_TRANSFER`, `TYPE_INSTANT` | `transfer` |
+| `TYPE_ORDER` | `order` |
+| `TYPE_CHECK` | `check` |
+| `TYPE_DEPOSIT`, `TYPE_CASH_DEPOSIT` | `deposit` |
+| `TYPE_WITHDRAWAL` | `withdrawal` |
+| `TYPE_BANK` | `bank_fee` |
+| tous les autres, dont `TYPE_UNKNOWN` | `other` (voir la limite de la note (e)) |
+
+**Comptes.**
+
+| Domaine | Valeur woob |
+|---|---|
+| `type` | `TYPE_CHECKING` donne `checking`, `TYPE_CARD` donne `card` ; tout autre type est ignoré. Tous les comptes `TYPE_CHECKING` sont synchronisés |
+| `ownership` | `AccountOwnership` `owner`, `co-owner`, `attorney` donnent `owner`, `co_owner`, `attorney` ; vide : `owner` |
+| `parent_id` | `parent.id` si le compte a un parent |
+| `currency` | `currency`, `EUR` par défaut |
+| `balance_cents` | `balance` en centimes, ou rien |
+
+**Relevés.**
+
+| Domaine | Valeur woob |
+|---|---|
+| lien avec le compte | la subscription dont l'`id` est celui du compte (note (f)) ; sans subscription, aucun relevé |
+| `period` | mois de `Document.date` (`AAAA-MM`, note (f)) ; un document sans date, comme le RIB, est ignoré |
+| `doc_type` | `statement` si `Document.type` vaut `statement` (`DocumentTypes.STATEMENT`), sinon `other` |
+
+**Erreurs** (classes de `woob/exceptions.py`).
+
+| Exception woob | Erreur du domaine |
+|---|---|
+| `BrowserIncorrectPassword` (et `BrowserUserBanned`) | `AuthFailed` ; à la 2FA, c'est un code refusé |
+| `BrowserQuestion`, champ `code` ou `email_code` | `TwoFactorRequired("sms")` ou `TwoFactorRequired("email")` ; un autre champ donne `AuthMethodUnsupported` |
+| `AppValidation` | `TwoFactorRequired("app")` |
+| `AppValidationExpired`, `AppValidationCancelled`, `NeedInteractiveFor2FA` | `TwoFactorExpired` |
+| `AuthMethodNotImplemented` (QR code) | `AuthMethodUnsupported` |
+| `BrowserUnavailable` (dont les erreurs HTTP 5xx de woob), erreurs de connexion et de délai de `requests` | `NetworkError` |
+| `ActionNeeded`, et toute autre exception levée par du code woob (cœur ou module) | `SourceBroken`, avec le message woob |
+| exception levée hors de woob | relancée telle quelle |
+
+Les messages ne contiennent jamais l'identifiant ni le mot de passe : ils sont masqués s'ils apparaissent dans un message de woob.
+
+**Session (`source/woob_source.py`).**
+
+- Construire la source ne lit rien et ne contacte pas la banque : le backend woob est créé au premier appel (note (a)), avec `request_information` non nul (note (b)) et le stockage chiffré de `woob/state.bin` (note (j)).
+- `login()` ouvre la session en lisant les comptes (`iter_accounts`), gardés en cache pour le passage.
+- Si la banque demande la 2FA, `login()` lève `TwoFactorRequired`. `submit_2fa` met alors le code dans le champ `code` ou `email_code` de la configuration du backend, ou `True` dans `resume` pour l'appli, puis relance la lecture des comptes (note (b)). Un code vide est refusé sans appel à la banque, et `submit_2fa` sans 2FA en attente lève `SourceBroken`.
+- Seules les méthodes de `ALLOWED_BACKEND_CALLS` sont appelées, à travers `_call`, qui le vérifie : `iter_accounts`, `iter_history`, `iter_coming`, `iter_subscription`, `iter_documents`, `download_document`. Seule autre méthode du backend utilisée : `dump_state`, qui écrit l'état de session dans `woob/state.bin` après l'ouverture de session, sans contacter la banque.
+- `iter_transactions(account_id, since)` s'arrête à la première opération dont `debit_date` est antérieure à `since`, car l'historique va du plus récent au plus ancien (note (h)).
