@@ -21,6 +21,8 @@ class FakeBankSource:
         login_error: SourceError | None = None,
         account_errors: dict[str, SourceError] | None = None,
         network_failures: int = 0,
+        then_methods: list[TwoFactorMethod] | None = None,
+        submit_error: SourceError | None = None,
     ) -> None:
         self.accounts = accounts
         self.history = history or {}
@@ -31,6 +33,8 @@ class FakeBankSource:
         self.login_error = login_error
         self.account_errors = account_errors or {}
         self.network_failures = network_failures
+        self.then_methods = list(then_methods or [])
+        self.submit_error = submit_error
         self.calls: list[tuple] = []
         self._login_calls = 0
 
@@ -46,11 +50,16 @@ class FakeBankSource:
 
     def submit_2fa(self, code: str | None) -> None:
         self.calls.append(("submit_2fa", code))
+        if self.submit_error is not None:
+            raise self.submit_error
         method = self.two_factor
         if method is None:
             return
         if (method == "app" and code is None) or code == self.expected_code:
             self.two_factor = None
+            if self.then_methods:  # 2FA enchaînée : une autre méthode est demandée ensuite
+                self.two_factor = self.then_methods.pop(0)
+                raise TwoFactorRequired(self.two_factor)
             return
         raise TwoFactorRequired(method)
 

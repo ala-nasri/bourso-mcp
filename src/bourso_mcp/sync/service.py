@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import tempfile
 import time
@@ -10,15 +11,46 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import TypeVar
+
+from filelock import FileLock, Timeout
 
 from bourso_mcp.config import Settings
 from bourso_mcp.source.base import BankSource
-from bourso_mcp.source.errors import SourceError
+from bourso_mcp.source.errors import (
+    AuthFailed,
+    NetworkError,
+    SourceError,
+    TwoFactorExpired,
+    TwoFactorRequired,
+)
 from bourso_mcp.source.models import Account, StatementRef, TwoFactorMethod
-from bourso_mcp.store.repository import Repository, RunStatus, Scope, Trigger
+from bourso_mcp.store.repository import Repository, RunRow, RunStatus, Scope, Trigger
 
 TwoFactorHandler = Callable[[TwoFactorMethod], str | None]
 OVERLAP = timedelta(days=10)
+RATE_LIMIT = timedelta(hours=1)
+RETRY_DELAYS = (2, 8, 30)
+MAX_2FA_STEPS = 3
+
+log = logging.getLogger("bourso_mcp.sync")
+T = TypeVar("T")
+
+
+class SyncAlreadyRunning(Exception):
+    def __init__(self, run: RunRow | None) -> None:
+        super().__init__("une synchronisation est déjà en cours")
+        self.run = run
+
+
+class SyncTooSoon(Exception):
+    def __init__(self, last_success_at: datetime) -> None:
+        super().__init__("dernière synchronisation réussie il y a moins d'une heure")
+        self.last_success_at = last_success_at
+
+
+class TwoFactorCodeRejected(SourceError):
+    """Code 2FA refusé par la source lors de `submit_2fa`."""
 
 
 @dataclass(frozen=True)
@@ -53,6 +85,10 @@ class DryRunLine:
 
 def _status_for_error(exc: SourceError) -> tuple[RunStatus, str, str]:
     """Seul endroit où une erreur de la source devient un statut de synchronisation."""
+    if isinstance(exc, TwoFactorRequired | TwoFactorExpired | TwoFactorCodeRejected):
+        return "auth_required", type(exc).__name__, str(exc)
+    if isinstance(exc, AuthFailed):
+        return "auth_failed", type(exc).__name__, str(exc)
     return "error", type(exc).__name__, str(exc)
 
 
@@ -83,37 +119,76 @@ class SyncService:
         self._now = now
         self._sleep = sleep
 
+    def check_can_start(self, force: bool) -> None:
+        """Lève SyncAlreadyRunning ou SyncTooSoon ; ne crée pas de source."""
+        self._acquire_lock().release()
+        if force:
+            return
+        last = self._repo.last_success_at()
+        if last is not None and self._now() - last < RATE_LIMIT:
+            raise SyncTooSoon(last)
+
+    def _acquire_lock(self) -> FileLock:
+        self._settings.home.mkdir(parents=True, exist_ok=True)
+        lock = FileLock(self._settings.lock_path, timeout=0)
+        try:
+            lock.acquire()
+        except Timeout:
+            raise SyncAlreadyRunning(self._repo.current_run()) from None
+        return lock
+
     def run(
         self, scope: Scope, trigger: Trigger, two_factor: TwoFactorHandler, *, force: bool = False
     ) -> SyncRunResult:
-        run_id = self._repo.start_run(trigger, scope, self._now())
+        self.check_can_start(force)
+        lock = self._acquire_lock()
         try:
-            return self._run(run_id, scope)
-        except Exception as exc:  # un bogue ne doit pas laisser la synchro « running »
-            self._repo.finish_run(run_id, "error", self._now(), 0, 0, type(exc).__name__, None)
-            raise
+            self._repo.mark_interrupted_runs(self._now())
+            run_id = self._repo.start_run(trigger, scope, self._now())
+            log.info("synchro %d démarrée (portée %s)", run_id, scope)
+            try:
+                result = self._run(run_id, scope, two_factor)
+            except Exception as exc:  # un bogue ne doit pas laisser la synchro « running »
+                self._repo.finish_run(run_id, "error", self._now(), 0, 0, type(exc).__name__, None)
+                log.info("synchro %d : statut error (%s)", run_id, type(exc).__name__)
+                raise
+            log.info(
+                "synchro %d terminée : statut %s, %d opérations, %d relevés ajoutés",
+                run_id,
+                result.status,
+                result.added_transactions,
+                result.added_statements,
+            )
+            return result
+        finally:
+            lock.release()
 
     def dry_run(self, two_factor: TwoFactorHandler) -> list[DryRunLine]:
-        source = self._source_factory()
-        source.login()
-        lines = []
-        for account in source.list_accounts():
-            since = self._since(account.id)
-            lines.append(
-                DryRunLine(
-                    account_id=account.id,
-                    label=account.label,
-                    type=account.type,
-                    transactions=sum(1 for _ in source.iter_transactions(account.id, since)),
-                    pending=sum(1 for _ in source.iter_pending(account.id)),
-                    statements=len(source.list_statements(account.id)),
-                )
-            )
-        return lines
-
-    def _run(self, run_id: int, scope: Scope) -> SyncRunResult:
+        """Même connexion que `run` (2FA, nouvelles tentatives), mais rien n'est écrit."""
+        lock = self._acquire_lock()
         try:
-            source = self._login()
+            source = self._login(None, two_factor)
+            return [self._dry_line(source, a) for a in source.list_accounts()]
+        finally:
+            lock.release()
+
+    def _dry_line(self, source: BankSource, account: Account) -> DryRunLine:
+        since = self._since(account.id)
+        txs = self._retry(lambda: list(source.iter_transactions(account.id, since)))
+        pending = self._retry(lambda: list(source.iter_pending(account.id)))
+        statements = self._retry(lambda: source.list_statements(account.id))
+        return DryRunLine(
+            account_id=account.id,
+            label=account.label,
+            type=account.type,
+            transactions=len(txs),
+            pending=len(pending),
+            statements=len(statements),
+        )
+
+    def _run(self, run_id: int, scope: Scope, two_factor: TwoFactorHandler) -> SyncRunResult:
+        try:
+            source = self._login(run_id, two_factor)
             accounts = source.list_accounts()
         except SourceError as exc:
             status, error_type, message = _status_for_error(exc)
@@ -123,10 +198,52 @@ class SyncService:
         status, error_type, message = self._final_status(outcomes)
         return self._finish(run_id, status, outcomes, error_type, message)
 
-    def _login(self) -> BankSource:
+    def _retry(self, call: Callable[[], T]) -> T:
+        """Retente sur NetworkError seulement, avec les attentes de RETRY_DELAYS."""
+        for delay in RETRY_DELAYS:
+            try:
+                return call()
+            except NetworkError:
+                log.info("erreur réseau, nouvelle tentative dans %ss", delay)
+                self._sleep(delay)
+        return call()
+
+    def _set_status(self, run_id: int | None, status: RunStatus, method: str | None = None) -> None:
+        if run_id is not None:  # None : essai à blanc, rien n'est écrit
+            self._repo.set_run_status(run_id, status, method)
+
+    def _login(self, run_id: int | None, two_factor: TwoFactorHandler) -> BankSource:
         source = self._source_factory()
-        source.login()
+        try:
+            self._retry(source.login)
+        except TwoFactorRequired as required:
+            self._two_factor_steps(source, run_id, required.method, two_factor)
         return source
+
+    def _two_factor_steps(
+        self,
+        source: BankSource,
+        run_id: int | None,
+        method: TwoFactorMethod,
+        two_factor: TwoFactorHandler,
+    ) -> None:
+        used: list[TwoFactorMethod] = []
+        while True:
+            if method in used or len(used) >= MAX_2FA_STEPS:
+                raise TwoFactorRequired(method)
+            used.append(method)
+            self._set_status(run_id, "awaiting_2fa", method)
+            log.info("authentification forte demandée (%s)", method)
+            code = two_factor(method)
+            try:
+                source.submit_2fa(code)  # jamais de nouvelle tentative ici
+            except TwoFactorRequired as chained:
+                method = chained.method
+                continue
+            except AuthFailed:
+                raise TwoFactorCodeRejected("code 2FA refusé, relancer la connexion") from None
+            self._set_status(run_id, "running")
+            return
 
     def _since(self, account_id: str) -> date | None:
         last = self._repo.max_debit_date(account_id)
@@ -145,18 +262,19 @@ class SyncService:
 
     def _transactions_step(self, source: BankSource, account_id: str) -> int:
         since = self._since(account_id)
-        txs = list(source.iter_transactions(account_id, since))
+        txs = self._retry(lambda: list(source.iter_transactions(account_id, since)))
         added = self._repo.upsert_transactions(account_id, txs, self._now())
-        self._repo.replace_pending(account_id, list(source.iter_pending(account_id)), self._now())
+        pending = self._retry(lambda: list(source.iter_pending(account_id)))
+        self._repo.replace_pending(account_id, pending, self._now())
         return added
 
     def _statements_step(self, source: BankSource, account_id: str) -> int:
         home = self._settings.home
         added = 0
-        for ref in source.list_statements(account_id):
+        for ref in self._retry(lambda: source.list_statements(account_id)):
             if not self._repo.statement_needs_download(ref.id, home):
                 continue
-            data = source.download_statement(ref)
+            data = self._retry(lambda ref=ref: source.download_statement(ref))
             path = self._store_statement(ref, data)
             self._repo.save_statement(
                 ref,

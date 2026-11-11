@@ -23,7 +23,7 @@ def service(source, repo, settings, now):
 
 
 def run(svc, scope="all"):
-    return svc.run(scope, "cli", lambda method: None)
+    return svc.run(scope, "cli", lambda method: None, force=True)
 
 
 def three_txs():
@@ -124,20 +124,20 @@ def test_all_accounts_failing_gives_error(repo, settings, now):
     assert res.status == "error"
 
 
-def test_login_failure_ends_run_in_error(repo, settings, now):
+def test_login_failure_ends_run_in_auth_failed(repo, settings, now):
     src = FakeBankSource([make_account("cc1")], login_error=AuthFailed("no"))
     res = run(service(src, repo, settings, now))
-    assert res.status == "error" and res.error_type == "AuthFailed"
+    assert res.status == "auth_failed" and res.error_type == "AuthFailed"
     assert repo.current_run() is None
     assert repo.last_finished_run().error_type == "AuthFailed"
 
 
-def test_factory_failure_ends_run_in_error(repo, settings, now):
+def test_factory_failure_ends_run_in_auth_failed(repo, settings, now):
     def boom():
         raise AuthFailed("absent")
 
     res = SyncService(boom, repo, settings, now=lambda: now).run("all", "cli", lambda m: None)
-    assert res.status == "error" and res.error_type == "AuthFailed"
+    assert res.status == "auth_failed" and res.error_type == "AuthFailed"
 
 
 def test_unexpected_exception_does_not_leave_run_running(repo, settings, now):
