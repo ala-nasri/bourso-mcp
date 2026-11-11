@@ -11,7 +11,7 @@ from bourso_mcp.source.errors import (
     SourceBroken,
     TwoFactorExpired,
 )
-from bourso_mcp.sync.service import RETRY_DELAYS, SyncService
+from bourso_mcp.sync.service import RETRY_DELAYS, SCHEDULE_LOGIN_RETRY_DELAYS, SyncService
 from tests.factories import make_account, make_tx
 from tests.fakes import FakeBankSource
 
@@ -163,6 +163,34 @@ def test_network_error_exhausted(repo, settings, now):
     res = build(src, repo, settings, now, sleeps).run("all", "cli", lambda m: None)
     assert sleeps == [2, 8, 30] == list(RETRY_DELAYS)
     assert res.status == "error"
+    assert res.error_type == "NetworkError"
+
+
+def test_scheduled_login_waits_longer_for_network(repo, settings, now):
+    # Tâche planifiée lancée au réveil : le réseau revient après plusieurs minutes.
+    src = one_account(network_failures=5)
+    sleeps = []
+    res = build(src, repo, settings, now, sleeps).run("all", "schedule", lambda m: None)
+    assert sleeps == [2, 8, 30, 60, 120]
+    assert res.status == "ok"
+
+
+def test_scheduled_login_network_error_exhausted(repo, settings, now):
+    src = one_account(network_failures=99)
+    sleeps = []
+    res = build(src, repo, settings, now, sleeps).run("all", "schedule", lambda m: None)
+    assert sleeps == list(SCHEDULE_LOGIN_RETRY_DELAYS)
+    assert res.status == "error"
+    assert res.error_type == "NetworkError"
+
+
+def test_scheduled_run_keeps_short_retries_after_login(repo, settings, now):
+    # Seule la connexion attend le réseau plus longtemps ; une fois connecté, une panne
+    # de la banque ne doit pas tenir le verrou pendant des minutes à chaque appel.
+    src = one_account(list_accounts_network_failures=9)
+    sleeps = []
+    res = build(src, repo, settings, now, sleeps).run("all", "schedule", lambda m: None)
+    assert sleeps == list(RETRY_DELAYS)
     assert res.error_type == "NetworkError"
 
 

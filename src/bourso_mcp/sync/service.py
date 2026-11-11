@@ -31,6 +31,9 @@ TwoFactorHandler = Callable[[TwoFactorMethod], str | None]
 OVERLAP = timedelta(days=10)
 RATE_LIMIT = timedelta(hours=1)
 RETRY_DELAYS = (2, 8, 30)
+# Passage planifié : personne n'attend, et la tâche peut démarrer au réveil ou à l'ouverture
+# de session, avant le retour du réseau. La connexion est donc retentée plus longtemps.
+SCHEDULE_LOGIN_RETRY_DELAYS = (2, 8, 30, 60, 120, 240)
 MAX_2FA_STEPS = 3
 
 log = logging.getLogger("bourso_mcp.sync")
@@ -147,7 +150,7 @@ class SyncService:
             run_id = self._repo.start_run(trigger, scope, self._now())
             log.info("synchro %d démarrée (portée %s)", run_id, scope)
             try:
-                result = self._run(run_id, scope, two_factor)
+                result = self._run(run_id, scope, trigger, two_factor)
             except BaseException as exc:  # bogue ou Ctrl+C : jamais de synchro laissée « running »
                 self._repo.finish_run(run_id, "error", self._now(), 0, 0, type(exc).__name__, None)
                 log.info("synchro %d : statut error (%s)", run_id, type(exc).__name__)
@@ -186,9 +189,12 @@ class SyncService:
             statements=len(statements),
         )
 
-    def _run(self, run_id: int, scope: Scope, two_factor: TwoFactorHandler) -> SyncRunResult:
+    def _run(
+        self, run_id: int, scope: Scope, trigger: Trigger, two_factor: TwoFactorHandler
+    ) -> SyncRunResult:
+        delays = SCHEDULE_LOGIN_RETRY_DELAYS if trigger == "schedule" else RETRY_DELAYS
         try:
-            source = self._login(run_id, two_factor)
+            source = self._login(run_id, two_factor, delays)
             accounts = self._retry(source.list_accounts)
         except SourceError as exc:
             status, error_type, message = _status_for_error(exc)
@@ -198,9 +204,9 @@ class SyncService:
         status, error_type, message = self._final_status(outcomes)
         return self._finish(run_id, status, outcomes, error_type, message)
 
-    def _retry(self, call: Callable[[], T]) -> T:
-        """Retente sur NetworkError seulement, avec les attentes de RETRY_DELAYS."""
-        for delay in RETRY_DELAYS:
+    def _retry(self, call: Callable[[], T], delays: tuple[int, ...] = RETRY_DELAYS) -> T:
+        """Retente sur NetworkError seulement, avec les attentes de `delays`."""
+        for delay in delays:
             try:
                 return call()
             except NetworkError:
@@ -212,10 +218,15 @@ class SyncService:
         if run_id is not None:  # None : essai à blanc, rien n'est écrit
             self._repo.set_run_status(run_id, status, method)
 
-    def _login(self, run_id: int | None, two_factor: TwoFactorHandler) -> BankSource:
+    def _login(
+        self,
+        run_id: int | None,
+        two_factor: TwoFactorHandler,
+        delays: tuple[int, ...] = RETRY_DELAYS,
+    ) -> BankSource:
         source = self._source_factory()
         try:
-            self._retry(source.login)
+            self._retry(source.login, delays)
         except TwoFactorRequired as required:
             self._two_factor_steps(source, run_id, required.method, two_factor)
         return source

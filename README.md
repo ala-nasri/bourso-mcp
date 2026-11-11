@@ -372,7 +372,7 @@ claude mcp add bourso -- uv --directory <chemin-du-dépôt> run bourso-mcp serve
 
 Une tâche planifiée Windows, `bourso-mcp sync`, lance chaque jour `bourso-mcp sync --non-interactive` (7 h 30 par défaut) pour tenir le stockage local à jour, que Claude soit ouvert ou non.
 
-**Enregistrer la tâche**, depuis `<chemin-du-dépôt>` (relancer la commande la met à jour ; `-At` change l'heure, au format `HH:mm`) :
+**Enregistrer la tâche**, depuis `<chemin-du-dépôt>` (relancer la commande la met à jour ; `-At` change l'heure, heure locale au format `HH:mm`) :
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-sync-task.ps1
@@ -401,7 +401,9 @@ Fonctionnement :
 
 - la tâche s'exécute sous l'utilisateur courant, **seulement quand il est connecté** (ouverture de session interactive, niveau d'exécution limité). Elle peut ainsi lire l'entrée `bourso-mcp` du Gestionnaire d'identification et l'état de session woob chiffré avec DPAPI, tous deux liés à la session ;
 - **aucun mot de passe n'est enregistré dans la tâche** ;
+- l'heure est locale et suit le passage à l'heure d'été ; si elle est déjà passée au moment de l'enregistrement, la première exécution a lieu le lendemain ;
 - si l'ordinateur était éteint à l'heure prévue, la tâche démarre dès que possible ensuite, et elle démarre aussi sur batterie, sans s'arrêter si l'ordinateur passe sur batterie ;
+- au réveil ou à l'ouverture de session, le réseau n'est pas toujours revenu : en mode planifié, la connexion à la banque est donc retentée pendant 7 min 40 s au plus (attentes de 2 s, 8 s, 30 s, 1 min, 2 min, 4 min) avant de finir en erreur réseau ;
 - en mode non interactif, une demande d'authentification forte met fin au passage en `auth_required` (code de sortie 2), sans attente : lancer alors `uv run bourso-mcp login`, qui demande le code.
 
 ## Vérification manuelle
@@ -462,7 +464,7 @@ Tout écart constaté devient une correction, avec son test.
 | `auth_required` | la banque demande l'authentification forte (2FA) alors qu'aucun humain ne peut répondre (mode planifié), ou le code n'est pas arrivé en 600 s, ou la 2FA chaînée dépasse 3 étapes | `uv run bourso-mcp login` et saisir le code ; en MCP, `sync_now` puis `submit_2fa_code` |
 | `auth_failed` | identifiants refusés, entrée `bourso-mcp` absente, ou code 2FA refusé ; aucun nouvel essai automatique, pour ne pas faire bloquer le compte | vérifier `cmdkey /list:bourso-mcp` et le mot de passe (section Configuration), puis `uv run bourso-mcp login` |
 | `error` (`SourceBroken`) | woob ou le site a changé : page ou format inattendu, action requise côté banque (`ActionNeeded`) | lire le message d'erreur ; se connecter au site ou à l'appli BoursoBank pour une éventuelle action demandée ; sinon monter woob (section Notes d'intégration woob). L'historique déjà synchronisé reste interrogeable |
-| `error` (`NetworkError`) | réseau ou banque indisponible, après 3 tentatives (attentes de 2 s, 8 s, 30 s) | attendre et relancer ; la tâche planifiée réessaie le lendemain |
+| `error` (`NetworkError`) | réseau ou banque indisponible, après 3 tentatives (attentes de 2 s, 8 s, 30 s ; pour la connexion d'un passage planifié, 6 tentatives, jusqu'à 4 min d'attente : voir Synchro planifiée) | attendre et relancer ; la tâche planifiée réessaie le lendemain |
 | `error` (`AuthMethodUnsupported`) | méthode 2FA non gérée (QR code) | choisir SMS, e-mail ou appli côté BoursoBank, puis `uv run bourso-mcp login` |
 | `partial` | un compte au moins a échoué, les autres sont synchronisés | `uv run bourso-mcp sync` affiche `<compte> : <type d'erreur>` ; traiter chaque erreur comme ci-dessus |
 
