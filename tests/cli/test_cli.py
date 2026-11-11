@@ -170,3 +170,20 @@ def test_keyboard_interrupt_exits_130(capsys, home, monkeypatch):
     assert cli_main.main(["login"]) == 130
     assert Repository(home / "bourso.db").last_finished_run().status == "error"
     assert "Traceback" not in capsys.readouterr().out
+
+
+def test_serve_starts_the_stdio_server_without_touching_the_bank(home, monkeypatch, capsys):
+    started = []
+    monkeypatch.setattr("bourso_mcp.server.app.serve_stdio", lambda settings: started.append(settings))
+    monkeypatch.setattr(
+        wiring, "source_factory", lambda settings: pytest.fail("source construite au démarrage")
+    )
+    assert cli_main.main(["serve"]) == 0
+    assert len(started) == 1 and started[0].home == home
+    assert capsys.readouterr().out == ""
+
+
+def test_help_lists_serve(capsys):
+    with pytest.raises(SystemExit):
+        cli_main.main(["--help"])
+    assert "serve" in capsys.readouterr().out

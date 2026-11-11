@@ -1,4 +1,4 @@
-"""Ligne de commande `bourso-mcp` : login, sync, status."""
+"""Ligne de commande `bourso-mcp` : serve, login, sync, status."""
 
 from __future__ import annotations
 
@@ -138,11 +138,22 @@ def _cmd_status(settings: Settings, args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_serve(settings: Settings, args: argparse.Namespace) -> int:
+    # Import tardif : les autres commandes n'ont pas besoin du SDK MCP. stdout est réservé au
+    # transport MCP ; les journaux (configurés dans main) vont sur stderr.
+    from bourso_mcp.server.app import serve_stdio
+
+    serve_stdio(settings)
+    return EXIT_OK
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="bourso-mcp", description="Synchronisation BoursoBank vers SQLite et PDF."
     )
     sub = parser.add_subparsers(dest="command", required=True)
+    serve = sub.add_parser("serve", help="lance le serveur MCP (stdio) pour Claude")
+    serve.set_defaults(func=_cmd_serve)
     login = sub.add_parser(
         "login", help="ouvre la session (2FA) et lance une première synchronisation"
     )

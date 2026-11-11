@@ -199,20 +199,22 @@ SDK officiel `mcp` (2.x), transport stdio. Les réponses sont en JSON. Les monta
 
 | Outil | Paramètres | Réponse |
 |---|---|---|
-| `list_accounts` | aucun | comptes avec type, titularité, parent, dernier solde et sa date |
-| `search_transactions` | filtres, `sort` (`date_desc` par défaut, `date_asc`, `amount_asc`, `amount_desc`), `limit` (100 par défaut, 500 au maximum), `offset` | `items`, `total_count`, `total_debits`, `total_credits`, `net` : totaux sur tout le filtre, pas seulement sur la page |
-| `summarize_transactions` | filtres, `group_by` (`month`, `category`, `label`, `type`, `account`), `limit` (50 groupes par défaut) | groupes avec `count`, `total_debits`, `total_credits` et `net`, triés par valeur absolue de `net` décroissante |
-| `export_transactions` | filtres | écrit `BOURSO_MCP_HOME/exports/transactions-<horodatage>.csv` (séparateur `;`, UTF-8 avec BOM, virgule décimale, pour Excel en français) ; renvoie le chemin et le nombre de lignes |
-| `list_statements` | `account_ids`, `period_from`, `period_to` (`AAAA-MM`) | relevés avec id, compte, période, date, type et chemin |
-| `read_statement` | `statement_id` | texte extrait du PDF (`pypdf`), période, compte, chemin local du fichier |
+| `list_accounts` | aucun | `accounts` : `id`, `label`, `type`, `ownership`, `parent_id`, `currency`, `balance` (dernier solde, chaîne en euros) et `balance_at` ; l'IBAN n'est pas exposé ; `sync` |
+| `search_transactions` | filtres, `sort` (`date_desc` par défaut, `date_asc`, `amount_asc`, `amount_desc`), `limit` (100 par défaut, ramené dans [1, 500]), `offset` (≥ 0) | `items` (`id`, `account_id`, `operation_date`, `debit_date`, `value_date`, `label`, `raw_label`, `amount`, `type`, `category`, `card`, `pending`), `total_count`, `total_debits`, `total_credits`, `net` (totaux sur tout le filtre, pas seulement sur la page), `limit`, `offset`, `sync` |
+| `summarize_transactions` | `group_by` (`month` par défaut, `category`, `label`, `type`, `account`), filtres, `limit` (50 groupes par défaut, ramené dans [1, 500]) | `group_by`, `groups` (`key`, `count`, `total_debits`, `total_credits`, `net`, triés par valeur absolue de `net` décroissante), `limit`, `sync` |
+| `export_transactions` | filtres | écrit `BOURSO_MCP_HOME/exports/transactions-<horodatage>.csv` (séparateur `;`, UTF-8 avec BOM, virgule décimale, pour Excel en français) ; renvoie `path`, `rows` et `sync` |
+| `list_statements` | `account_ids`, `period_from`, `period_to` (`AAAA-MM`) | `statements` (`id`, `account_id`, `period`, `date`, `doc_type`, `path`), `sync` |
+| `read_statement` | `statement_id` | `id`, `account_id`, `period`, `date`, `doc_type`, `path` (fichier local), `pages`, `has_text`, `text` (extrait avec `pypdf`), `sync` ; fichier absent : l'erreur invite à lancer `sync_now(scope="statements")` |
+
+Validation : un paramètre invalide (date hors `AAAA-MM-JJ`, période hors `AAAA-MM`, bornes inversées, montant négatif, valeur inconnue de `types`, `sort`, `group_by`, `scope`, `direction` ou `date_field`) renvoie une erreur en français qui nomme le paramètre et les valeurs permises. Les montants en entrée (`amount_min`, `amount_max`) sont en euros, nombres ou chaînes décimales.
 
 **Outils de synchro et d'authentification** : les seuls qui contactent BoursoBank.
 
 | Outil | Paramètres | Réponse |
 |---|---|---|
-| `sync_now` | `scope` (`all` par défaut, `transactions`, `statements`), `force` (`false` par défaut) | `started: true`, ou refus motivé (synchro déjà en cours, ou dernière synchro réussie il y a moins d'une heure) |
-| `sync_status` | aucun | passage en cours ou dernier passage (statut, étape, méthode 2FA attendue, compteurs, erreur) et date du dernier succès |
-| `submit_2fa_code` | `code` | `accepted: true`, ou `accepted: false` avec la raison (aucun passage n'attend de code) |
+| `sync_now` | `scope` (`all` par défaut, `transactions`, `statements`), `force` (`false` par défaut) | `started: true` avec un `message` ; ou `started: false` avec `reason` : `already_running` (avec `current`, l'état du passage en cours) ou `too_soon` (avec `last_success_at` ; `force=true` passe outre) |
+| `sync_status` | aucun | `current` (passage en cours : `status` `running` ou `awaiting_2fa`, `twofa_method`, compteurs), `last` (dernier passage terminé : statut, compteurs, erreur), `last_success_at`, `sync` ; l'étape d'un passage est son statut |
+| `submit_2fa_code` | `code` | `accepted: true`, ou `accepted: false` avec la `reason` (aucun passage n'attend de code SMS ou e-mail) ; le code n'est jamais répété ni journalisé |
 
 ## Prérequis
 
@@ -338,7 +340,31 @@ En cas de succès : `ok : 12 transactions et 1 relevé ajoutés`. En cas de sync
 uv run bourso-mcp status
 ```
 
-`uv run bourso-mcp --help` liste les commandes. Le serveur `serve` et le lancement dans Claude sont ajoutés à ce README avec la tâche qui les crée.
+**`serve`** : lance le serveur MCP en stdio ; il est lancé par Claude, pas à la main (voir Lancement du MCP). stdout est le canal du protocole : les journaux sortent sur stderr, jamais ailleurs. Les identifiants ne sont lus que lorsqu'une synchro démarre : le serveur démarre, et les outils de lecture marchent, même sans l'entrée `bourso-mcp`.
+
+`uv run bourso-mcp --help` liste les commandes.
+
+## Lancement du MCP
+
+Prérequis : `uv sync` fait, et l'entrée `bourso-mcp` créée dans le Gestionnaire d'identification (section Configuration). Dans les commandes ci-dessous, remplacer `<chemin-du-dépôt>` par le dossier du dépôt.
+
+**Claude Desktop.** Le plus sûr pour ouvrir le bon fichier de configuration : Claude Desktop > Paramètres > Développeur > Modifier la configuration. L'édition Microsoft Store (MSIX) peut garder ce fichier dans un dossier d'application empaqueté plutôt que dans `%APPDATA%\Claude\`. Ajouter le serveur à `claude_desktop_config.json` :
+
+```json
+{"mcpServers": {"bourso": {"command": "uv", "args": ["--directory", "<chemin-du-dépôt>", "run", "bourso-mcp", "serve"]}}}
+```
+
+Puis relancer Claude Desktop (quitter l'application depuis la zone de notification, pas seulement fermer la fenêtre) : la configuration n'est lue qu'au démarrage.
+
+**Claude Code.**
+
+```bash
+claude mcp add bourso -- uv --directory <chemin-du-dépôt> run bourso-mcp serve
+```
+
+**Pas de bloc `env`.** Les identifiants sont lus dans le Gestionnaire d'identification Windows, qui ne dépend pas de l'environnement transmis par Claude (voir Configuration) ; `BOURSO_MCP_HOME`, s'il est défini, est lu aussi dans les variables persistantes de Windows.
+
+**Premier usage.** `uv run bourso-mcp login` au terminal ouvre la session (2FA comprise) et fait la première synchro ; ensuite Claude peut interroger les données, et lancer `sync_now` (avec `submit_2fa_code` si la 2FA est redemandée).
 
 ## Notes d'intégration woob
 
