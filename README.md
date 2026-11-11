@@ -304,7 +304,41 @@ Toutes les commandes passent par `uv`, depuis `<chemin-du-dépôt>`.
 | `uv run pytest -v` | lance la suite de tests (aucun appel réseau) |
 | `uv run ruff check .` | vérifie le style du code |
 
-Les commandes du serveur (`serve`, `login`, `sync`, `status`) et le lancement dans Claude sont ajoutés à ce README avec les tâches qui les créent.
+### Ligne de commande `bourso-mcp`
+
+Les identifiants ne sont jamais demandés : ils viennent de l'entrée `bourso-mcp` du Gestionnaire d'identification (section Configuration). Les journaux sortent sur stderr ; les messages ci-dessous sur stdout.
+
+**Codes de sortie** : `0` réussite ; `1` synchro partielle ou en erreur ; `2` authentification requise ou refusée (identifiants absents compris) ; `3` refus (dernière réussite il y a moins d'une heure, ou synchro déjà en cours) ; `130` interruption par Ctrl+C.
+
+**`login`** : ouvre la session avec l'authentification forte (code SMS ou e-mail saisi au terminal, ou validation dans l'appli) et lance une première synchronisation, sans tenir compte de la limite d'une par heure.
+
+```bash
+uv run bourso-mcp login
+```
+
+**`sync`** : synchronise comptes, opérations et relevés. Options :
+
+- `--scope {all,transactions,statements}` : portée (`all` par défaut) ;
+- `--force` : ignore la limite d'une synchro par heure ;
+- `--non-interactive` : mode planifié, jamais de saisie ; si une authentification forte est demandée, la commande sort avec le code 2 (lancer alors `login`) ;
+- `--dry-run` : affiche une ligne par compte (identifiant, libellé, type, opérations, opérations en attente, relevés) sans rien écrire.
+
+```bash
+uv run bourso-mcp sync
+uv run bourso-mcp sync --scope statements --force
+uv run bourso-mcp sync --non-interactive
+uv run bourso-mcp sync --dry-run
+```
+
+En cas de succès : `ok : 12 transactions et 1 relevé ajoutés`. En cas de synchro partielle, une ligne `<compte> : <type d'erreur>` suit pour chaque compte en échec.
+
+**`status`** : affiche la synchro en cours (avec la méthode de 2FA attendue), la dernière terminée (statut, compteurs, erreur) et la dernière réussite, en heure locale.
+
+```bash
+uv run bourso-mcp status
+```
+
+`uv run bourso-mcp --help` liste les commandes. Le serveur `serve` et le lancement dans Claude sont ajoutés à ce README avec la tâche qui les crée.
 
 ## Notes d'intégration woob
 
