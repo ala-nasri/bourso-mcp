@@ -401,7 +401,7 @@ Fonctionnement :
 
 - la tâche s'exécute sous l'utilisateur courant, **seulement quand il est connecté** (ouverture de session interactive, niveau d'exécution limité). Elle peut ainsi lire l'entrée `bourso-mcp` du Gestionnaire d'identification et l'état de session woob chiffré avec DPAPI, tous deux liés à la session ;
 - **aucun mot de passe n'est enregistré dans la tâche** ;
-- si l'ordinateur était éteint à l'heure prévue, la tâche démarre dès que possible ensuite ;
+- si l'ordinateur était éteint à l'heure prévue, la tâche démarre dès que possible ensuite, et elle démarre aussi sur batterie, sans s'arrêter si l'ordinateur passe sur batterie ;
 - en mode non interactif, une demande d'authentification forte met fin au passage en `auth_required` (code de sortie 2), sans attente : lancer alors `uv run bourso-mcp login`, qui demande le code.
 
 ## Vérification manuelle

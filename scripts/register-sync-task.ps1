@@ -54,12 +54,13 @@ $action = New-ScheduledTaskAction -Execute $uv.Source `
     -Argument "--directory `"$root`" run bourso-mcp sync --non-interactive" `
     -WorkingDirectory $root
 $trigger = New-ScheduledTaskTrigger -Daily -At $At
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
     -LogonType Interactive -RunLevel Limited
 
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
-    -Settings $settings -Principal $principal -Force
+    -Settings $settings -Principal $principal -Force | Out-Null
 
 $next = (Get-ScheduledTaskInfo -TaskName $TaskName).NextRunTime
 Write-Host "Tâche « $TaskName » enregistrée : synchro quotidienne à $At, prochaine exécution le $next."
