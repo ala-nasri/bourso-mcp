@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import time
 
+from filelock import FileLock
+
 from bourso_mcp.sync.runner import BackgroundSync, StartResult
 from bourso_mcp.sync.service import SyncService
 from tests.factories import make_account
@@ -42,7 +44,7 @@ def test_sms_code_submitted_via_submit_code(repo, settings, now):
     assert bg.start("all").started
     assert wait_until(lambda: (bg.status()["current"] or {}).get("status") == "awaiting_2fa")
     assert bg.status()["current"]["twofa_method"] == "sms"
-    assert bg.submit_code("123 456") is True
+    assert wait_until(lambda: bg.submit_code("123 456"))
     out = bg.wait(2)
     assert out is not None and out.status == "ok"
 
@@ -51,14 +53,14 @@ def test_submit_code_without_waiting_run_returns_false(repo, settings, now):
     bg = build(one_account(), repo, settings, now)
     assert bg.submit_code("123456") is False
     assert bg.submit_code("   ") is False
-    bg.start("all")
+    assert bg.start("all").started
     bg.wait(2)
     assert bg.submit_code("123456") is False
 
 
 def test_code_timeout_gives_auth_required(repo, settings, now):
     bg = build(one_account(two_factor="sms"), repo, settings, now, code_timeout=0.1)
-    bg.start("all")
+    assert bg.start("all").started
     out = bg.wait(2)
     assert out is not None and out.status == "auth_required"
     assert out.error_type == "TwoFactorExpired"
@@ -71,7 +73,7 @@ def test_start_while_running_reports_already_running(repo, settings, now):
     assert wait_until(lambda: (bg.status()["current"] or {}).get("status") == "awaiting_2fa")
     second = bg.start("all", force=True)
     assert second.started is False and second.reason == "already_running"
-    assert bg.submit_code("123456") is True
+    assert wait_until(lambda: bg.submit_code("123456"))
     assert bg.wait(2).status == "ok"
 
 
@@ -84,3 +86,22 @@ def test_start_too_soon_reports_too_soon(repo, settings, now):
     assert res.last_success_at == now
     assert bg.start("all", force=True).started
     assert bg.wait(2).status == "ok"
+
+
+def test_chained_two_factor_sms_then_email(repo, settings, now):
+    src = one_account(two_factor="sms", then_methods=["email"])
+    bg = build(src, repo, settings, now)
+    assert bg.start("all").started
+    assert wait_until(lambda: (bg.status()["current"] or {}).get("twofa_method") == "sms")
+    assert wait_until(lambda: bg.submit_code("123456"))
+    assert wait_until(lambda: (bg.status()["current"] or {}).get("twofa_method") == "email")
+    assert wait_until(lambda: bg.submit_code("123456"))
+    out = bg.wait(2)
+    assert out is not None and out.status == "ok"
+    assert [c for c in src.calls if c[0] == "submit_2fa"] == [("submit_2fa", "123456")] * 2
+
+
+def test_start_when_lock_held_elsewhere_reports_already_running(repo, settings, now):
+    with FileLock(settings.lock_path, timeout=0):
+        res = build(one_account(), repo, settings, now).start("all")
+    assert res == StartResult(False, "already_running", None)

@@ -65,12 +65,13 @@ class BackgroundSync:
             except SyncAlreadyRunning:
                 return StartResult(False, "already_running", self._repo.last_success_at())
             self._result = None
+            last_success = self._repo.last_success_at()  # avant le thread : pas son propre succès
             worker = threading.Thread(
                 target=self._work, args=(scope, force), name="bourso-sync", daemon=True
             )
             self._worker = worker
             worker.start()
-            return StartResult(True, "started", self._repo.last_success_at())
+            return StartResult(True, "started", last_success)
 
     def submit_code(self, code: str) -> bool:
         cleaned = "".join(code.split())
