@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pypdf import PdfReader
+from pypdf.errors import PyPdfError
 
 from bourso_mcp.store.queries import _in
 from bourso_mcp.store.schema import connect
@@ -17,6 +18,10 @@ class StatementNotFound(LookupError):
 
 
 class StatementFileMissing(FileNotFoundError):
+    pass
+
+
+class StatementUnreadable(ValueError):
     pass
 
 
@@ -65,9 +70,15 @@ def read_statement(db_path: Path, home: Path, statement_id: str) -> StatementTex
         conn.close()
     if row is None:
         raise StatementNotFound(statement_id)
-    path = home / row["file_path"]
+    path = (home / row["file_path"]).resolve()
+    if not path.is_relative_to(home.resolve()):
+        raise StatementFileMissing("chemin hors du dossier de données")
     if not path.is_file():
-        raise StatementFileMissing(str(path))
-    reader = PdfReader(path)
-    text = "\n".join(page.extract_text() or "" for page in reader.pages)
-    return StatementText(row, path, len(reader.pages), text, bool(text.strip()))
+        raise StatementFileMissing("fichier du relevé absent")
+    try:
+        reader = PdfReader(path)
+        pages = len(reader.pages)
+        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    except (PyPdfError, ValueError, OSError) as e:
+        raise StatementUnreadable("PDF illisible ou corrompu") from e
+    return StatementText(row, path, pages, text, bool(text.strip()))

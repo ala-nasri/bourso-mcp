@@ -6,6 +6,7 @@ from bourso_mcp.source.models import StatementRef
 from bourso_mcp.store.statements import (
     StatementFileMissing,
     StatementNotFound,
+    StatementUnreadable,
     list_statements,
     read_statement,
 )
@@ -79,3 +80,36 @@ def test_read_statement_missing_file(repo, settings, now, accounts):
 def test_read_statement_unknown_id(repo, settings):
     with pytest.raises(StatementNotFound):
         read_statement(repo.db_path, settings.home, "nope")
+
+
+def _set_file_path(repo, statement_id, value):
+    import sqlite3
+
+    conn = sqlite3.connect(repo.db_path)
+    with conn:
+        conn.execute("UPDATE statements SET file_path = ? WHERE id = ?", (value, statement_id))
+    conn.close()
+
+
+def test_read_statement_rejects_parent_traversal(repo, settings, now, accounts):
+    ref = add(repo, settings, now, "2026-10", blank_pdf())
+    (settings.home.parent / "x.pdf").write_bytes(blank_pdf())
+    _set_file_path(repo, ref.id, "../x.pdf")
+    with pytest.raises(StatementFileMissing):
+        read_statement(repo.db_path, settings.home, ref.id)
+
+
+def test_read_statement_rejects_absolute_path(repo, settings, now, accounts, tmp_path_factory):
+    ref = add(repo, settings, now, "2026-10", blank_pdf())
+    outside = tmp_path_factory.mktemp("outside") / "y.pdf"
+    outside.write_bytes(blank_pdf())
+    _set_file_path(repo, ref.id, str(outside))
+    with pytest.raises(StatementFileMissing):
+        read_statement(repo.db_path, settings.home, ref.id)
+
+
+@pytest.mark.parametrize("content", [b"", b"ceci n'est pas un pdf"])
+def test_read_statement_unreadable_pdf(repo, settings, now, accounts, content):
+    ref = add(repo, settings, now, "2026-10", content)
+    with pytest.raises(StatementUnreadable):
+        read_statement(repo.db_path, settings.home, ref.id)
