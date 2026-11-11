@@ -22,6 +22,7 @@ from woob.exceptions import (
     OTPSentType,
     SentOTPQuestion,
 )
+from woob.tools.config.iconfig import ConfigError
 from woob.tools.value import ValueTransient
 
 from bourso_mcp.credentials import Credentials
@@ -42,7 +43,7 @@ from bourso_mcp.source.woob_source import (
 )
 from bourso_mcp.source.woob_storage import EncryptedWoobStorage
 
-CREDS = Credentials("12345678", "motdepassefictif")
+CREDS = Credentials("24681357", "motdepassefictif")
 CHECKING_ID = "00012345678"
 JOINT_ID = "00087654321"
 
@@ -162,18 +163,19 @@ def test_backend_receives_credentials_interactive_flag_and_encrypted_storage(tmp
     make_source(FakeBackend(), tmp_path, built).login()
     assert len(built) == 1
     params, storage = built[0]
-    assert params["login"] == "12345678"
+    assert params["login"] == "24681357"
     assert params["password"] == "motdepassefictif"
     assert params["request_information"] is not None  # note (b) : 2FA interactive
     assert isinstance(storage, EncryptedWoobStorage)
     assert storage.path == tmp_path / "state.bin"
 
 
-def test_source_repr_hides_password(tmp_path):
+def test_source_repr_hides_login_and_password(tmp_path):
     source = make_source(FakeBackend(), tmp_path)
     source.login()
-    assert "motdepassefictif" not in repr(source)
-    assert "motdepassefictif" not in repr(vars(source))
+    for text in (repr(source), repr(vars(source))):
+        assert CREDS.login not in text
+        assert CREDS.password not in text
 
 
 # ---------------------------------------------------------------- session et 2FA
@@ -315,18 +317,25 @@ def test_credentials_never_appear_in_translated_message(tmp_path, exc_type, expe
     assert info.value.__cause__ is None and info.value.__suppress_context__
 
 
-def test_state_save_failure_is_a_warning_not_a_failure(tmp_path, caplog):
-    class DiskFull(FakeBackend):
+@pytest.mark.parametrize(
+    "failure",
+    [OSError("disque plein"), AttributeError("état SESSIONID"), ConfigError("état SESSIONID")],
+    ids=["oserror", "attributeerror", "woob-configerror"],
+)
+def test_state_save_failure_is_a_warning_not_a_failure(tmp_path, caplog, failure):
+    class Failing(FakeBackend):
         def dump_state(self):
             self._record("dump_state")
-            raise OSError("disque plein")
+            raise failure
 
-    source = make_source(DiskFull(), tmp_path)
+    source = make_source(Failing(), tmp_path)
     with caplog.at_level(logging.WARNING, logger="bourso_mcp.source"):
         source.login()
     assert len(source.list_accounts()) == 2
     assert [r.levelno for r in caplog.records] == [logging.WARNING]
+    assert type(failure).__name__ in caplog.text
     assert "disque plein" not in caplog.text
+    assert "SESSIONID" not in caplog.text
 
 
 def test_non_woob_exception_is_reraised_as_is(tmp_path):

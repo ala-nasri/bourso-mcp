@@ -19,7 +19,6 @@ from woob.capabilities.base import empty
 from woob.core import WoobBase
 
 from bourso_mcp.credentials import Credentials
-from bourso_mcp.source.dpapi import DpapiError
 from bourso_mcp.source.errors import AuthFailed, SourceBroken, SourceError, TwoFactorRequired
 from bourso_mcp.source.models import Account, StatementRef, Transaction, TwoFactorMethod
 from bourso_mcp.source.woob_mapping import (
@@ -116,7 +115,7 @@ class WoobBoursoSource:
         """
         try:
             self._get_backend().dump_state()
-        except (OSError, DpapiError, TypeError, ValueError) as exc:
+        except Exception as exc:  # noqa: BLE001 - session ouverte : ne jamais échouer ici
             log.warning(
                 "état de session woob non sauvegardé (%s) : la 2FA pourra être redemandée",
                 type(exc).__name__,

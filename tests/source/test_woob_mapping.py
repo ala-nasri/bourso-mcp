@@ -272,6 +272,22 @@ def test_translate_error_two_factor_method(exc, method):
     assert translate_error(exc).method == method
 
 
+def test_banned_account_message_does_not_invite_a_retry():
+    error = translate_error(BrowserUserBanned("Accès bloqué"))
+    assert isinstance(error, AuthFailed)
+    message = str(error)
+    assert "bloqué" in message
+    assert "site ou l'appli" in message
+    assert "relancer" not in message
+    assert "relancez" not in message
+    assert "cmdkey" not in message
+
+
+def test_incorrect_password_message_gives_cmdkey():
+    message = str(translate_error(BrowserIncorrectPassword("Identifiant ou mot de passe invalide")))
+    assert "cmdkey /generic:bourso-mcp" in message
+
+
 def test_translate_error_keeps_woob_message():
     error = translate_error(ActionNeeded("Conditions générales à accepter"))
     assert "Conditions générales à accepter" in str(error)

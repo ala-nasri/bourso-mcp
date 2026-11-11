@@ -20,6 +20,7 @@ from woob.exceptions import (
     BrowserIncorrectPassword,
     BrowserQuestion,
     BrowserUnavailable,
+    BrowserUserBanned,
     NeedInteractiveFor2FA,
 )
 
@@ -152,6 +153,11 @@ def _woob_message(e: Exception) -> str:
 
 def translate_error(e: Exception) -> SourceError | None:
     """Erreur du domaine pour une exception woob ; None pour une exception non woob (à relancer)."""
+    if isinstance(e, BrowserUserBanned):  # avant BrowserIncorrectPassword, dont il hérite
+        return AuthFailed(
+            f"compte bloqué par BoursoBank ({_woob_message(e)}) : n'essayez pas de vous "
+            "reconnecter, débloquez d'abord l'accès depuis le site ou l'appli BoursoBank"
+        )
     if isinstance(e, BrowserIncorrectPassword):
         if set(e.bad_fields or ()) & set(_QUESTION_FIELDS):
             return AuthFailed(f"code 2FA refusé par BoursoBank ({_woob_message(e)})")

@@ -290,7 +290,7 @@ Les dossiers `statements/`, `exports/` et `woob/` sont créés au démarrage.
   - L'état, sérialisé en JSON, est chiffré avec DPAPI : `CryptProtectData`, portée utilisateur, entropie propre à l'application, sans aucune fenêtre. Il est écrit dans un fichier temporaire voisin, qui remplace ensuite `state.bin` d'un coup.
   - Le fichier est donc illisible hors de la session Windows de l'utilisateur (sauvegarde, autre poste).
   - Il est écrit après chaque ouverture de session réussie, 2FA comprise. Un échec d'écriture n'arrête pas la synchro : un avertissement est journalisé, et la 2FA sera seulement redemandée plus tôt.
-  - Un état illisible (altéré, venu d'un autre utilisateur, contenu invalide) est ignoré, avec un avertissement qui n'en montre aucun contenu : on repart d'un état vide, ce qui redemande la 2FA.
+  - Un état illisible (fichier inaccessible ou verrouillé, altéré, venu d'un autre utilisateur, contenu invalide) est ignoré, avec un avertissement qui n'en montre aucun contenu : on repart d'un état vide, ce qui redemande la 2FA.
 - **Codes 2FA** : jamais conservés. Le champ de configuration woob qui reçoit un code est vidé dès que la connexion a repris, pour qu'un code ne soit jamais rejoué.
 - **Limite assumée** : un programme qui tourne sous la session Windows de l'utilisateur peut lire l'entrée du Gestionnaire d'identification comme l'état woob. Les protections de fond restent BitLocker, Windows Hello et l'absence de logiciel douteux sur le poste.
 - **Données au repos** (base, PDF) : non chiffrées, par choix ; leur protection repose sur la session Windows et le chiffrement du disque.
@@ -326,15 +326,15 @@ La dernière version de woob sur PyPI (3.7, octobre 2024) est plus ancienne que 
 5. vérification manuelle contre BoursoBank (`bourso-mcp sync --dry-run`) : la procédure détaillée sera décrite dans la section Vérification manuelle
 6. versionner le nouveau commit du sous-module, et reporter son SHA et sa date dans le tableau ci-dessus
 
-### Résultats du spike woob (tâche 2)
+### Observations en conditions réelles (2026-11)
 
-Constats faits à la tâche 2 contre la vraie banque, avec un script de validation jetable (connexion, liste des comptes et téléchargement d'un relevé réussis ; le script a été supprimé à la tâche 10), puis lecture du code de woob. Ils pilotent `WoobBoursoSource`.
+Constats faits en novembre 2026 contre la vraie banque, avec le commit woob épinglé (connexion, liste des comptes et téléchargement d'un relevé réussis), complétés par la lecture du code de woob. Ils pilotent `WoobBoursoSource`.
 
 - **(a) Chargement des modules.** `WoobBase(modules_path=<vendor/woob/modules>)`, puis `load_backend("boursorama", "boursorama", params, storage=<stockage>)`. Le stockage se passe à `load_backend`, pas à `WoobBase`. Classe du module : `BoursoramaModule`. Les paramètres contiennent `login`, `password` et `request_information`.
 - **(b) 2FA interactive.** Le paramètre `request_information` doit valoir une valeur non nulle (par exemple `{}`) dans la configuration **avant** la création du navigateur : `TwoFactorBrowser.is_interactive` est lu à la construction. Sinon, `NeedInteractiveFor2FA`. Exceptions levées par le module (lecture du code) : SMS, `SentOTPQuestion` avec le champ `code` ; e-mail, `SentOTPQuestion` avec le champ `email_code` ; appli, `AppValidation`. Reprise : `backend.config["code"]` ou `["email_code"]` reçoit `.set(<code>)`, ou `backend.config["resume"].set(True)` pour l'appli, puis on rappelle la méthode (champs de `AUTHENTICATION_METHODS` : `code`, `email_code`, `resume`). Un SMS peut être suivi d'un e-mail. Un code faux lève `BrowserIncorrectPassword`. L'attente de la validation dans l'appli est de 10 minutes au plus.
 - **(c) Méthode 2FA observée.** Premier lancement sans état sauvegardé : aucune 2FA demandée, connexion directe. Le chemin 2FA n'a donc **pas** été observé en conditions réelles : il reste à vérifier à la tâche 13.
 - **(d) Compte joint.** Il est visible, avec `ownership` = `co-owner` (`AccountOwnership.CO_OWNER`, soit `co_owner` côté domaine). Des comptes d'autres types (non `CHECKING`) sont aussi renvoyés ; `to_account` les ignore (seuls `CHECKING` et `CARD` sont retenus). Tous les comptes `CHECKING` sont synchronisés.
-- **(e) Cartes et types de transaction.** Sur la fenêtre observée (30 jours, aucune opération à venir), aucun compte de type `CARD` avec `parent` n'est apparu et aucune ligne `TYPE_CARD_SUMMARY` non plus. Le spike ne distingue pas « pas de carte à débit différé » de « le module n'expose pas les cartes comme comptes » : la gestion des comptes `CARD` (`parent`, `card_summary`) n'est donc **pas vérifiée en conditions réelles**. Types de transaction observés : seulement `TYPE_CARD` et `TYPE_UNKNOWN`. Avec la correspondance de la tâche 10, les opérations hors carte tombent donc en `other` : **limite connue**, les virements et prélèvements ne sont pas distingués.
+- **(e) Cartes et types de transaction.** Sur la fenêtre observée (30 jours, aucune opération à venir), aucun compte de type `CARD` avec `parent` n'est apparu et aucune ligne `TYPE_CARD_SUMMARY` non plus. L'observation ne distingue pas « pas de carte à débit différé » de « le module n'expose pas les cartes comme comptes » : la gestion des comptes `CARD` (`parent`, `card_summary`) n'est donc **pas vérifiée en conditions réelles**. Types de transaction observés : seulement `TYPE_CARD` et `TYPE_UNKNOWN`. Avec la correspondance de la tâche 10, les opérations hors carte tombent donc en `other` : **limite connue**, les virements et prélèvements ne sont pas distingués.
 - **(f) Documents.** `iter_subscription()` renvoie une subscription par compte : `subscription.id` == `account.id` (aussi == `account.number` et `subscription._account_key` == `account._webid`). `Document.id` = `<subscription.id>_<suffixe>`. `Document.type` == `"statement"` (`DocumentTypes.STATEMENT`), `format` = `pdf`. Les documents arrivent par dates décroissantes. `date` tombe en fin de mois (dernier jour, ou quelques jours avant) ; le mois cité dans le libellé, quand il y en a un (un document sur vingt n'en a pas), est celui de `date`, donc `period` ne doit pas être tiré du libellé ; l'en-tête du PDF couvre les 30 jours environ qui finissent à `date`. **Règle de `period` : `period` = mois de `Document.date` (AAAA-MM).** `pypdf` extrait bien le texte du relevé.
 - **(g) Champs des opérations.** `rdate`, `vdate`, `bdate` et `category` sont renseignés. `card` est vide, même sur les opérations carte.
 - **(h) Ordre.** `iter_history` renvoie du plus récent au plus ancien.
@@ -392,7 +392,8 @@ Constats faits à la tâche 2 contre la vraie banque, avec un script de validati
 
 | Exception woob | Erreur du domaine |
 |---|---|
-| `BrowserIncorrectPassword` (et `BrowserUserBanned`) | `AuthFailed` ; à la 2FA, c'est un code refusé |
+| `BrowserIncorrectPassword` | `AuthFailed` ; à la connexion, le message donne la commande `cmdkey` ; à la 2FA, c'est un code refusé |
+| `BrowserUserBanned` (compte bloqué) | `AuthFailed`, avec un message propre : ne pas réessayer, débloquer l'accès depuis le site ou l'appli BoursoBank |
 | `BrowserQuestion`, champ `code` ou `email_code` | `TwoFactorRequired("sms")` ou `TwoFactorRequired("email")` ; un autre champ donne `AuthMethodUnsupported` |
 | `AppValidation` | `TwoFactorRequired("app")` |
 | `AppValidationExpired`, `AppValidationCancelled`, `NeedInteractiveFor2FA` | `TwoFactorExpired` |

@@ -41,6 +41,8 @@ class EncryptedWoobStorage(IStorage):
             blob = self.path.read_bytes()
         except FileNotFoundError:
             return {}
+        except OSError as exc:  # droits, fichier verrouillé (antivirus)...
+            return self._unreadable(type(exc).__name__)
         try:
             values = json.loads(self._unprotect(blob))
         except (DpapiError, ValueError) as exc:

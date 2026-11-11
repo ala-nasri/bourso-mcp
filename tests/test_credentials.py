@@ -16,17 +16,27 @@ from bourso_mcp.credentials import (
     read_windows_credential,
 )
 from bourso_mcp.source.errors import AuthFailed
+from tests.fakes import InMemoryKeyring
 
 
-def test_credentials_repr_hides_password():
+def memory_keyring() -> InMemoryKeyring:
+    """Garde-fou : si la fixture autouse ne remplaçait plus le keyring, le test s'arrête ici,
+    avant toute lecture ou écriture dans le vrai Gestionnaire d'identification."""
+    backend = keyring.get_keyring()
+    assert isinstance(backend, InMemoryKeyring), "keyring réel actif : test arrêté"
+    return backend
+
+
+def test_credentials_repr_hides_login_and_password():
     text = repr(Credentials("12345678", "secret"))
     assert "secret" not in text
-    assert "12345678" in text
+    assert "12345678" not in text
 
 
 def test_read_windows_credential_uses_keyring():
+    store = memory_keyring()
     assert read_windows_credential(CREDENTIAL_TARGET) is None
-    keyring.get_keyring().set_password("bourso-mcp", "12345678", "pw")
+    store.set_password("bourso-mcp", "12345678", "pw")
     assert read_windows_credential(CREDENTIAL_TARGET) == ("12345678", "pw")
 
 
@@ -42,7 +52,7 @@ def test_load_credentials_from_reader():
 
 
 def test_load_credentials_reads_keyring_by_default():
-    keyring.get_keyring().set_password("bourso-mcp", "87654321", "pw2")
+    memory_keyring().set_password("bourso-mcp", "87654321", "pw2")
     assert load_credentials() == Credentials("87654321", "pw2")
 
 

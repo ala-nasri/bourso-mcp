@@ -113,6 +113,30 @@ def test_state_file_is_not_plaintext(tmp_path):
     assert reloaded.get("backends", "boursorama", "browser_state") == {"cookies": "SESSIONID=abc"}
 
 
+def test_unreadable_file_starts_fresh(tmp_path, caplog):
+    # Un dossier à la place du fichier : la lecture lève une OSError (PermissionError sous
+    # Windows, IsADirectoryError ailleurs), comme un fichier verrouillé par un antivirus.
+    path = tmp_path / "state.bin"
+    path.mkdir()
+    with caplog.at_level(logging.DEBUG):
+        s = storage(path)
+    assert s.get("backends", "boursorama", "browser_state", default={}) == {}
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]
+
+
+def test_unreadable_file_error_message_is_not_logged(tmp_path, caplog, monkeypatch):
+    def locked(self):
+        raise PermissionError(13, "SESSIONID verrouillé", str(self))
+
+    monkeypatch.setattr(type(tmp_path), "read_bytes", locked)
+    with caplog.at_level(logging.DEBUG):
+        s = storage(tmp_path / "state.bin")
+    assert s.get("backends", "boursorama", "browser_state", default={}) == {}
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]
+    assert "SESSIONID" not in caplog.text
+    assert "state.bin" not in caplog.text
+
+
 def _broken_unprotect(blob: bytes) -> bytes:
     raise DpapiError("blob altéré")
 

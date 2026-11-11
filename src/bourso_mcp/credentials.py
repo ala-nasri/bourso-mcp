@@ -21,7 +21,7 @@ CMDKEY_HINT = "cmdkey /generic:bourso-mcp /user:<identifiant> /pass"
 
 @dataclass(frozen=True)
 class Credentials:
-    login: str
+    login: str = field(repr=False)
     password: str = field(repr=False)
 
 
