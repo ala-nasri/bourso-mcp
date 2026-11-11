@@ -47,6 +47,7 @@ Un seul paquet Python (3.12, géré avec `uv`), dans `src/bourso_mcp/` :
 | `sync/` | `SyncService` : orchestration, verrou, journal des passages ; `sync/twofactor.py` : gestionnaire 2FA interactif pour la CLI (saisie au terminal, sans délai) et gestionnaire non interactif qui lève `TwoFactorExpired` |
 | `server/` | serveur MCP : `tools.py` (logique des neuf outils et validation des paramètres, sans import MCP) et `app.py` (enregistrement auprès du SDK `mcp`, descriptions des outils, transport stdio, `serve_stdio`) |
 | `cli/` | commande `bourso-mcp` : `serve`, `sync`, `login`, `status` |
+| `scripts/register-sync-task.ps1` | (hors paquet) enregistre ou supprime la tâche planifiée Windows de synchro quotidienne |
 
 Règle de dépendance :
 
@@ -305,6 +306,7 @@ Toutes les commandes passent par `uv`, depuis `<chemin-du-dépôt>`.
 |---|---|
 | `uv run pytest -v` | lance la suite de tests (aucun appel réseau) |
 | `uv run ruff check .` | vérifie le style du code |
+| `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-sync-task.ps1` | enregistre la tâche planifiée de synchro quotidienne (option `-At`, ou `-Unregister` pour la supprimer) : voir Synchro planifiée |
 
 ### Ligne de commande `bourso-mcp`
 
@@ -366,6 +368,110 @@ claude mcp add bourso -- uv --directory <chemin-du-dépôt> run bourso-mcp serve
 
 **Premier usage.** `uv run bourso-mcp login` au terminal ouvre la session (2FA comprise) et fait la première synchro ; ensuite Claude peut interroger les données, et lancer `sync_now` (avec `submit_2fa_code` si la 2FA est redemandée).
 
+## Synchro planifiée
+
+Une tâche planifiée Windows, `bourso-mcp sync`, lance chaque jour `bourso-mcp sync --non-interactive` (7 h 30 par défaut) pour tenir le stockage local à jour, que Claude soit ouvert ou non.
+
+**Enregistrer la tâche**, depuis `<chemin-du-dépôt>` (relancer la commande la met à jour ; `-At` change l'heure, au format `HH:mm`) :
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-sync-task.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-sync-task.ps1 -At "06:45"
+```
+
+**La lancer une fois à la main** :
+
+```powershell
+Start-ScheduledTask -TaskName "bourso-mcp sync"
+```
+
+**Vérifier le résultat** : `uv run bourso-mcp status` affiche le dernier passage ; dans le Planificateur de tâches, la colonne « Dernier résultat » de la tâche montre le code de sortie de la CLI (codes dans Dépannage).
+
+```bash
+uv run bourso-mcp status
+```
+
+**La supprimer** :
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/register-sync-task.ps1 -Unregister
+```
+
+Fonctionnement :
+
+- la tâche s'exécute sous l'utilisateur courant, **seulement quand il est connecté** (ouverture de session interactive, niveau d'exécution limité). Elle peut ainsi lire l'entrée `bourso-mcp` du Gestionnaire d'identification et l'état de session woob chiffré avec DPAPI, tous deux liés à la session ;
+- **aucun mot de passe n'est enregistré dans la tâche** ;
+- si l'ordinateur était éteint à l'heure prévue, la tâche démarre dès que possible ensuite ;
+- en mode non interactif, une demande d'authentification forte met fin au passage en `auth_required` (code de sortie 2), sans attente : lancer alors `uv run bourso-mcp login`, qui demande le code.
+
+## Vérification manuelle
+
+À refaire contre la vraie banque après chaque montée de version de woob. Les commandes `uv` se lancent depuis `<chemin-du-dépôt>`.
+
+1. **Identifiants, session et état chiffré.** Vérifier que l'entrée existe (sinon, voir Configuration) :
+
+   ```powershell
+   cmdkey /list:bourso-mcp
+   ```
+
+   Puis ouvrir la session :
+
+   ```bash
+   uv run bourso-mcp login
+   ```
+
+   Saisir le code si la 2FA est demandée. Le premier passage doit finir `ok` ou `partial` ; il récupère tout l'historique disponible et environ 5 ans de relevés, ce qui peut être long. Vérifier ensuite que `%LOCALAPPDATA%\bourso-mcp\woob\state.bin` existe (ou le même chemin sous `BOURSO_MCP_HOME`), et qu'aucun autre fichier d'état en clair n'est apparu dans ce dossier.
+
+2. **Volumes par compte, sans écriture.**
+
+   ```bash
+   uv run bourso-mcp sync --dry-run --force
+   ```
+
+   Les volumes doivent être plausibles pour chaque compte, compte joint compris. Les comptes de carte n'apparaissent que si la banque expose des cartes à débit différé (aucun n'a été observé jusqu'ici).
+
+3. **État.**
+
+   ```bash
+   uv run bourso-mcp status
+   ```
+
+4. **Claude Desktop** configuré (voir Lancement du MCP). Demander à Claude de lancer une synchro forcée (`sync_now` avec `force=true`), puis de suivre `sync_status` : le passage doit dépasser l'étape de connexion. C'est la vérification du risque MSIX (voir Dépannage). Poser ensuite trois questions :
+   - « liste mes comptes » ;
+   - « combien ai-je dépensé par carte en octobre 2026 ? », à comparer avec le site ;
+   - « lis mon relevé de septembre 2026 », à comparer avec le PDF.
+
+5. **Tâche planifiée.** L'enregistrer (voir Synchro planifiée), la lancer, puis lire l'état :
+
+   ```powershell
+   Start-ScheduledTask -TaskName "bourso-mcp sync"
+   ```
+
+   ```bash
+   uv run bourso-mcp status
+   ```
+
+Tout écart constaté devient une correction, avec son test.
+
+## Dépannage
+
+**Statuts d'un passage** (visibles avec `uv run bourso-mcp status` ou l'outil `sync_status`) :
+
+| Statut | Cause | Action |
+|---|---|---|
+| `auth_required` | la banque demande l'authentification forte (2FA) alors qu'aucun humain ne peut répondre (mode planifié), ou le code n'est pas arrivé en 600 s, ou la 2FA chaînée dépasse 3 étapes | `uv run bourso-mcp login` et saisir le code ; en MCP, `sync_now` puis `submit_2fa_code` |
+| `auth_failed` | identifiants refusés, entrée `bourso-mcp` absente, ou code 2FA refusé ; aucun nouvel essai automatique, pour ne pas faire bloquer le compte | vérifier `cmdkey /list:bourso-mcp` et le mot de passe (section Configuration), puis `uv run bourso-mcp login` |
+| `error` (`SourceBroken`) | woob ou le site a changé : page ou format inattendu, action requise côté banque (`ActionNeeded`) | lire le message d'erreur ; se connecter au site ou à l'appli BoursoBank pour une éventuelle action demandée ; sinon monter woob (section Notes d'intégration woob). L'historique déjà synchronisé reste interrogeable |
+| `error` (`NetworkError`) | réseau ou banque indisponible, après 3 tentatives (attentes de 2 s, 8 s, 30 s) | attendre et relancer ; la tâche planifiée réessaie le lendemain |
+| `error` (`AuthMethodUnsupported`) | méthode 2FA non gérée (QR code) | choisir SMS, e-mail ou appli côté BoursoBank, puis `uv run bourso-mcp login` |
+| `partial` | un compte au moins a échoué, les autres sont synchronisés | `uv run bourso-mcp sync` affiche `<compte> : <type d'erreur>` ; traiter chaque erreur comme ci-dessus |
+
+**Compte bloqué.** Si le message annonce que le compte est bloqué, **ne pas réessayer** : chaque nouvel essai risque de prolonger le blocage. Débloquer l'accès depuis le site ou l'appli BoursoBank, puis relancer.
+
+**Codes de sortie de la CLI** : `0` réussite ; `1` synchro partielle ou en erreur ; `2` authentification requise ou refusée (identifiants absents compris) ; `3` refus (dernière réussite il y a moins d'une heure, ou synchro déjà en cours) ; `130` interruption par Ctrl+C. Une erreur d'usage de la ligne de commande (option inconnue, par exemple) sort aussi avec le code 2, via `argparse`.
+
+**Risque MSIX (Claude Desktop).** Si `sync_now` lancé depuis Claude finit en `auth_failed` avec un message qui cite `cmdkey`, alors que `cmdkey /list:bourso-mcp` montre bien l'entrée, le serveur lancé par Claude Desktop (édition Microsoft Store, empaquetée) ne peut pas lire le Gestionnaire d'identification. La CLI et la tâche planifiée ne sont pas touchées : elles gardent le stockage à jour, et les outils de lecture continuent de fonctionner.
+
 ## Notes d'intégration woob
 
 La dernière version de woob sur PyPI (3.7, octobre 2024) est plus ancienne que les correctifs du module `boursorama`, disponibles seulement sur la branche `master` du dépôt. Le cœur de woob et le module `boursorama` sont donc épinglés **sur un même commit**, dans le sous-module `vendor/woob`, installé en mode éditable par `uv`.
@@ -383,7 +489,7 @@ La dernière version de woob sur PyPI (3.7, octobre 2024) est plus ancienne que 
 2. `git -C vendor/woob checkout <sha>` : le nouveau commit doit contenir celui du 2026-10-31 sur `modules/boursorama`
 3. `uv sync`
 4. `uv run pytest -v`
-5. vérification manuelle contre BoursoBank (`bourso-mcp sync --dry-run`) : la procédure détaillée sera décrite dans la section Vérification manuelle
+5. vérification manuelle contre BoursoBank (`bourso-mcp sync --dry-run`) : procédure détaillée dans la section Vérification manuelle
 6. versionner le nouveau commit du sous-module, et reporter son SHA et sa date dans le tableau ci-dessus
 
 ### Observations en conditions réelles (2026-11)
@@ -392,7 +498,7 @@ Constats faits en novembre 2026 contre la vraie banque, avec le commit woob épi
 
 - **(a) Chargement des modules.** `WoobBase(modules_path=<vendor/woob/modules>)`, puis `load_backend("boursorama", "boursorama", params, storage=<stockage>)`. Le stockage se passe à `load_backend`, pas à `WoobBase`. Classe du module : `BoursoramaModule`. Les paramètres contiennent `login`, `password` et `request_information`.
 - **(b) 2FA interactive.** Le paramètre `request_information` doit valoir une valeur non nulle (par exemple `{}`) dans la configuration **avant** la création du navigateur : `TwoFactorBrowser.is_interactive` est lu à la construction. Sinon, `NeedInteractiveFor2FA`. Exceptions levées par le module (lecture du code) : SMS, `SentOTPQuestion` avec le champ `code` ; e-mail, `SentOTPQuestion` avec le champ `email_code` ; appli, `AppValidation`. Reprise : `backend.config["code"]` ou `["email_code"]` reçoit `.set(<code>)`, ou `backend.config["resume"].set(True)` pour l'appli, puis on rappelle la méthode (champs de `AUTHENTICATION_METHODS` : `code`, `email_code`, `resume`). Un SMS peut être suivi d'un e-mail. Un code faux lève `BrowserIncorrectPassword`. L'attente de la validation dans l'appli est de 10 minutes au plus.
-- **(c) Méthode 2FA observée.** Premier lancement sans état sauvegardé : aucune 2FA demandée, connexion directe. Le chemin 2FA n'a donc **pas** été observé en conditions réelles : il reste à vérifier à la tâche 13.
+- **(c) Méthode 2FA observée.** Premier lancement sans état sauvegardé : aucune 2FA demandée, connexion directe. Le chemin 2FA n'a donc **pas** été observé en conditions réelles : la section Vérification manuelle le vérifie.
 - **(d) Compte joint.** Il est visible, avec `ownership` = `co-owner` (`AccountOwnership.CO_OWNER`, soit `co_owner` côté domaine). Des comptes d'autres types (non `CHECKING`) sont aussi renvoyés ; `to_account` les ignore (seuls `CHECKING` et `CARD` sont retenus). Tous les comptes `CHECKING` sont synchronisés.
 - **(e) Cartes et types de transaction.** Sur la fenêtre observée (30 jours, aucune opération à venir), aucun compte de type `CARD` avec `parent` n'est apparu et aucune ligne `TYPE_CARD_SUMMARY` non plus. L'observation ne distingue pas « pas de carte à débit différé » de « le module n'expose pas les cartes comme comptes » : la gestion des comptes `CARD` (`parent`, `card_summary`) n'est donc **pas vérifiée en conditions réelles**. Types de transaction observés : seulement `TYPE_CARD` et `TYPE_UNKNOWN`. Avec la correspondance de la tâche 10, les opérations hors carte tombent donc en `other` : **limite connue**, les virements et prélèvements ne sont pas distingués.
 - **(f) Documents.** `iter_subscription()` renvoie une subscription par compte : `subscription.id` == `account.id` (aussi == `account.number` et `subscription._account_key` == `account._webid`). `Document.id` = `<subscription.id>_<suffixe>`. `Document.type` == `"statement"` (`DocumentTypes.STATEMENT`), `format` = `pdf`. Les documents arrivent par dates décroissantes. `date` tombe en fin de mois (dernier jour, ou quelques jours avant) ; le mois cité dans le libellé, quand il y en a un (un document sur vingt n'en a pas), est celui de `date`, donc `period` ne doit pas être tiré du libellé ; l'en-tête du PDF couvre les 30 jours environ qui finissent à `date`. **Règle de `period` : `period` = mois de `Document.date` (AAAA-MM).** `pypdf` extrait bien le texte du relevé.
@@ -400,7 +506,7 @@ Constats faits en novembre 2026 contre la vraie banque, avec le commit woob épi
 - **(h) Ordre.** `iter_history` renvoie du plus récent au plus ancien.
 - **(i) Dépendances.** Aucune dépendance supplémentaire à celles de woob et du projet.
 - **(j) Stockage.** Interface `IStorage` : `load(what, name, default)`, `save(what, name)`, `get(what, name, *path, default=)`, `set(what, name, *path, value)`, `delete(what, name, *path)`. `BackendStorage` préfixe tout par `('backends', <nom>)`. Le stockage standard (`StandardStorage`) est un fichier YAML en clair. Appels observés pour un lancement (ordre non établi) : `load`, `get` et `set` de `browser_state`, `save`. Clés déclarées par le navigateur (`__states__`) : `recipient_form`, `transfer_form`, `form_state`, `user_hash`, `otp_number`, `otp_form_token`, `twofa_config`, `otp_headers`, `twofa_count` ; woob y ajoute `url`, `cookies` (et `twofa_logged_date` après une 2FA). `browser_state` est entièrement sérialisable en JSON : `cookies` et `url` sont des `str`, `twofa_count` un `int`, le reste `None`. L'état contient les cookies de session : il doit être chiffré (DPAPI).
-- **(k) Identifiants.** `keyring.get_credential("bourso-mcp", None)` lit l'entrée créée avec `cmdkey` via `WinVaultKeyring` : identifiant et mot de passe sont lus. L'identifiant est composé de chiffres (format exigé par woob). Le risque MSIX de Claude Desktop (accès au Gestionnaire d'identification) reste à vérifier à la tâche 13.
+- **(k) Identifiants.** `keyring.get_credential("bourso-mcp", None)` lit l'entrée créée avec `cmdkey` via `WinVaultKeyring` : identifiant et mot de passe sont lus. L'identifiant est composé de chiffres (format exigé par woob). Le risque MSIX de Claude Desktop (accès au Gestionnaire d'identification) est vérifié par la section Vérification manuelle (étape 4).
 
 ### Correspondance woob → domaine (`source/woob_mapping.py`)
 
